@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const maxTurns = 10
+
 // Local is a Narrator backed by any server exposing the OpenAI-compatible
 // chat completions API (POST {BaseURL}/v1/chat/completions) — the common
 // surface across Ollama, llama.cpp's llama-server, vLLM, LM Studio, and
@@ -23,6 +25,8 @@ type Local struct {
 	SystemPrompt string // optional; sent as the system message on every call
 	APIKey       string // optional; sent as Bearer token in Authorization header
 	HTTPClient   *http.Client
+
+	messages []chatMessage
 }
 
 // NewLocal returns a Local narrator with a sane request timeout. Local
@@ -33,6 +37,11 @@ func NewLocal(baseURL, model string) *Local {
 		Model:      model,
 		HTTPClient: &http.Client{Timeout: 120 * time.Second},
 	}
+}
+
+// Reset clears the conversation history. Call once at the start of a new run.
+func (l *Local) Reset() {
+	l.messages = nil
 }
 
 type chatMessage struct {
@@ -53,19 +62,22 @@ type chatCompletionsResponse struct {
 }
 
 func (l *Local) Present(ctx context.Context, pc PresentContext) (string, error) {
-	return l.complete(ctx, buildPresentPrompt(pc))
+	fullPrompt, historyData := buildPresentPrompt(pc)
+	return l.complete(ctx, fullPrompt, historyData)
 }
 
 func (l *Local) Narrate(ctx context.Context, nc NarrateContext) (string, error) {
-	return l.complete(ctx, buildNarratePrompt(nc))
+	fullPrompt, historyData := buildNarratePrompt(nc)
+	return l.complete(ctx, fullPrompt, historyData)
 }
 
-func (l *Local) complete(ctx context.Context, userPrompt string) (string, error) {
-	messages := make([]chatMessage, 0, 2)
+func (l *Local) complete(ctx context.Context, fullPrompt string, historyData string) (string, error) {
+	messages := make([]chatMessage, 0, 1+len(l.messages)+1)
 	if l.SystemPrompt != "" {
 		messages = append(messages, chatMessage{Role: "system", Content: l.SystemPrompt})
 	}
-	messages = append(messages, chatMessage{Role: "user", Content: userPrompt})
+	messages = append(messages, l.messages...)
+	messages = append(messages, chatMessage{Role: "user", Content: fullPrompt})
 
 	body, err := json.Marshal(chatCompletionsRequest{Model: l.Model, Messages: messages})
 	if err != nil {
@@ -103,45 +115,72 @@ func (l *Local) complete(ctx context.Context, userPrompt string) (string, error)
 	if len(parsed.Choices) == 0 {
 		return "", fmt.Errorf("narrator: response had no choices")
 	}
-	return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
+	assistantContent := strings.TrimSpace(parsed.Choices[0].Message.Content)
+
+	l.messages = append(l.messages,
+		chatMessage{Role: "user", Content: historyData},
+		chatMessage{Role: "assistant", Content: assistantContent},
+	)
+	l.evict()
+
+	return assistantContent, nil
 }
 
-func buildPresentPrompt(pc PresentContext) string {
-	var b strings.Builder
-	b.WriteString("Narrate the upcoming scene in plain prose. Do not decide outcomes; only set the scene.\n\n")
-	if pc.ProseSummary != "" {
-		b.WriteString("Story so far:\n" + pc.ProseSummary + "\n\n")
+func (l *Local) evict() {
+	if len(l.messages) <= 2*maxTurns {
+		return
 	}
+	keep := 2 * maxTurns
+	l.messages = l.messages[len(l.messages)-keep:]
+}
+
+func buildPresentPrompt(pc PresentContext) (fullPrompt string, historyData string) {
+	var fb, hb strings.Builder
+
 	if len(pc.RelevantState) > 0 {
-		b.WriteString("Relevant known facts:\n" + formatState(pc.RelevantState) + "\n")
+		stateStr := formatState(pc.RelevantState)
+		fb.WriteString("Describe the upcoming scene in plain prose. Do not decide outcomes; only set the scene.\n\nRelevant known facts:\n" + stateStr + "\n")
+		hb.WriteString("Relevant known facts:\n" + stateStr + "\n")
+	} else {
+		fb.WriteString("Describe the upcoming scene in plain prose. Do not decide outcomes; only set the scene.\n\n")
 	}
-	b.WriteString("Beat premise: " + pc.BeatPremise + "\n")
+
+	fb.WriteString("Beat premise: " + pc.BeatPremise + "\n")
+	hb.WriteString("Beat premise: " + pc.BeatPremise + "\n")
 	if pc.BeatType != "" {
-		b.WriteString("Beat type: " + pc.BeatType + "\n")
+		fb.WriteString("Beat type: " + pc.BeatType + "\n")
+		hb.WriteString("Beat type: " + pc.BeatType + "\n")
 	}
-	b.WriteString("\nWrite the scene now.")
-	return b.String()
+	fb.WriteString("\nWrite the scene now.")
+
+	return fb.String(), hb.String()
 }
 
-func buildNarratePrompt(nc NarrateContext) string {
-	var b strings.Builder
-	b.WriteString("Narrate what happened this turn, in the exact order given. Do not change or contradict any outcome.\n\n")
-	if nc.ProseSummary != "" {
-		b.WriteString("Story so far:\n" + nc.ProseSummary + "\n\n")
-	}
+func buildNarratePrompt(nc NarrateContext) (fullPrompt string, historyData string) {
+	var fb, hb strings.Builder
+
+	fb.WriteString("Narrate what happened this turn, in the exact order given. Do not change or contradict any outcome.\n\n")
+
 	if len(nc.RelevantState) > 0 {
-		b.WriteString("Relevant known facts:\n" + formatState(nc.RelevantState) + "\n")
+		stateStr := formatState(nc.RelevantState)
+		fb.WriteString("Relevant known facts:\n" + stateStr + "\n")
+		hb.WriteString("Relevant known facts:\n" + stateStr + "\n")
 	}
-	b.WriteString("Resolved actions (already decided; narrate faithfully):\n")
+
+	fb.WriteString("Resolved actions (already decided; narrate faithfully):\n")
+	hb.WriteString("Resolved actions:\n")
 	for _, a := range nc.ResolvedActions {
-		b.WriteString(fmt.Sprintf("- %s attempted %q -> %s", a.CharacterID, a.Intent, a.Outcome))
+		line := fmt.Sprintf("- %s attempted %q -> %s", a.CharacterID, a.Intent, a.Outcome)
 		if a.Summary != "" {
-			b.WriteString(" (" + a.Summary + ")")
+			line += " (" + a.Summary + ")"
 		}
-		b.WriteString("\n")
+		line += "\n"
+		fb.WriteString(line)
+		hb.WriteString(line)
 	}
-	b.WriteString("\nWrite the narration now.")
-	return b.String()
+	fb.WriteString("\nWrite the narration now.")
+
+	return fb.String(), hb.String()
 }
 
 func formatState(state map[string]any) string {

@@ -21,6 +21,9 @@ func main() {
 		model := os.Getenv("LOCAL_NARRATOR_MODEL")
 		local := narrator.NewLocal(baseURL, model)
 		local.SystemPrompt = os.Getenv("LOCAL_NARRATOR_SYSTEM_PROMPT")
+		if local.SystemPrompt == "" {
+			local.SystemPrompt = "You are a vivid fantasy narrator. In PRESENT mode, describe the upcoming scene based on the beat premise and known facts. In NARRATE mode, narrate resolved actions faithfully in the exact order given. Write in plain prose; never decide outcomes or contradict provided data."
+		}
 		local.APIKey = os.Getenv("LOCAL_NARRATOR_API_KEY")
 		n = local
 		narratorKind = "local (" + baseURL + ", model=" + model + ")"

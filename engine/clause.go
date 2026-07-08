@@ -162,7 +162,7 @@ func FinishClause(
 	// COMMIT (R9)
 	clause.Phase = PhaseCommit
 	Commit(run, clause.ResolvedActions)
-	run.ProseSummary = compactProse(run.ProseSummary, narrationPlain)
+	run.ProseSummary = narrationPlain
 	if run.CurrentClauseIndex >= len(run.Skeleton) {
 		run.Status = "ended"
 	}

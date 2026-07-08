@@ -3,6 +3,7 @@ package narrator
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -143,6 +144,110 @@ func TestLocalSendsAuthorizationHeaderWhenAPIKeySet(t *testing.T) {
 	}
 	if gotAuth != "Bearer test-secret-key" {
 		t.Fatalf("expected Authorization header %q, got %q", "Bearer test-secret-key", gotAuth)
+	}
+}
+
+func TestLocalMultiTurnHistory(t *testing.T) {
+	var callCount int
+	var requests []chatCompletionsRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var req chatCompletionsRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		requests = append(requests, req)
+		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{
+			Choices: []struct {
+				Message chatMessage `json:"message"`
+			}{{Message: chatMessage{Content: "scene one"}}},
+		})
+	}))
+	defer server.Close()
+
+	l := NewLocal(server.URL, "test")
+	l.SystemPrompt = "test system"
+
+	_, _ = l.Present(context.Background(), PresentContext{
+		BeatPremise: "a goblin blocks the path",
+		BeatType:    "combat",
+	})
+	_, _ = l.Narrate(context.Background(), NarrateContext{
+		ResolvedActions: []ResolvedActionSummary{
+			{CharacterID: "hero", Intent: "attack", Outcome: "SUCCESS"},
+		},
+	})
+
+	if callCount != 2 {
+		t.Fatalf("expected 2 calls, got %d", callCount)
+	}
+
+	secondReq := requests[1]
+	userMessages := 0
+	for _, m := range secondReq.Messages {
+		if m.Role == "user" {
+			userMessages++
+		}
+	}
+	if userMessages != 2 {
+		t.Fatalf("expected 2 user messages in second call (history + current), got %d", userMessages)
+	}
+
+	historyUserContent := secondReq.Messages[1].Content
+	if !strings.Contains(historyUserContent, "a goblin blocks the path") {
+		t.Fatalf("expected first turn data in history, got: %s", historyUserContent)
+	}
+}
+
+func TestLocalEvictsOldMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{
+			Choices: []struct {
+				Message chatMessage `json:"message"`
+			}{{Message: chatMessage{Content: "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	l := NewLocal(server.URL, "test")
+	l.SystemPrompt = "sys"
+
+	for i := 0; i < 12; i++ {
+		_, _ = l.Present(context.Background(), PresentContext{
+			BeatPremise: fmt.Sprintf("beat-%d", i),
+		})
+	}
+
+	if len(l.messages) > 2*maxTurns {
+		t.Fatalf("expected at most %d history messages, got %d", 2*maxTurns, len(l.messages))
+	}
+
+	firstUser := l.messages[0]
+	if strings.Contains(firstUser.Content, "beat-0") {
+		t.Fatal("expected beat-0 to be evicted")
+	}
+	if !strings.Contains(firstUser.Content, "beat-2") {
+		t.Fatalf("expected beat-2 to be first retained, got: %s", firstUser.Content)
+	}
+}
+
+func TestLocalResetClearsHistory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{
+			Choices: []struct {
+				Message chatMessage `json:"message"`
+			}{{Message: chatMessage{Content: "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	l := NewLocal(server.URL, "test")
+	_, _ = l.Present(context.Background(), PresentContext{BeatPremise: "test"})
+	if len(l.messages) == 0 {
+		t.Fatal("expected messages after a call")
+	}
+
+	l.Reset()
+	if len(l.messages) != 0 {
+		t.Fatalf("expected empty history after Reset, got %d messages", len(l.messages))
 	}
 }
 

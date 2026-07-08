@@ -207,6 +207,9 @@ func (s *Server) getRun(runID string) *managedRun {
 // loot_window, loot_resolved) is pushed by the Hooks room.RunNextClause
 // invokes mid-flight.
 func (s *Server) driveRun(mr *managedRun) {
+	if local, ok := s.Narrator.(*narrator.Local); ok {
+		local.Reset()
+	}
 	ctx := context.Background()
 	for {
 		if mr.room.Snapshot().Status == "ended" {
