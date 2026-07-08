@@ -21,6 +21,7 @@ type Local struct {
 	BaseURL      string // e.g. "http://localhost:11434" or "http://localhost:8080"
 	Model        string // model name exactly as the server expects it
 	SystemPrompt string // optional; sent as the system message on every call
+	APIKey       string // optional; sent as Bearer token in Authorization header
 	HTTPClient   *http.Client
 }
 
@@ -76,6 +77,9 @@ func (l *Local) complete(ctx context.Context, userPrompt string) (string, error)
 		return "", fmt.Errorf("narrator: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if l.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+l.APIKey)
+	}
 
 	client := l.HTTPClient
 	if client == nil {

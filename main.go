@@ -21,6 +21,7 @@ func main() {
 		model := os.Getenv("LOCAL_NARRATOR_MODEL")
 		local := narrator.NewLocal(baseURL, model)
 		local.SystemPrompt = os.Getenv("LOCAL_NARRATOR_SYSTEM_PROMPT")
+		local.APIKey = os.Getenv("LOCAL_NARRATOR_API_KEY")
 		n = local
 		narratorKind = "local (" + baseURL + ", model=" + model + ")"
 	}

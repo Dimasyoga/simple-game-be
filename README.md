@@ -25,6 +25,7 @@ no LLM calls — see `narrator/narrator.go`).
 | `LOCAL_NARRATOR_URL` | unset (uses the stub) | Base URL of a local model server exposing an OpenAI-compatible `/v1/chat/completions` endpoint (Ollama, llama.cpp's `llama-server`, vLLM, LM Studio, text-generation-webui, ...) |
 | `LOCAL_NARRATOR_MODEL` | `""` | Model name to send in each request, as the local server expects it |
 | `LOCAL_NARRATOR_SYSTEM_PROMPT` | `""` | Optional system prompt prepended to every PRESENT/NARRATE call |
+| `LOCAL_NARRATOR_API_KEY` | unset | Bearer token for the local model server's API |
 
 Example running against a local model server on `localhost:11434`:
 

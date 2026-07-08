@@ -123,3 +123,46 @@ func TestLocalReturnsErrorOnEmptyChoices(t *testing.T) {
 		t.Fatal("expected an error when the response has no choices")
 	}
 }
+
+func TestLocalSendsAuthorizationHeaderWhenAPIKeySet(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{
+			Choices: []struct {
+				Message chatMessage `json:"message"`
+			}{{Message: chatMessage{Content: "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	l := NewLocal(server.URL, "mistral-7b")
+	l.APIKey = "test-secret-key"
+	if _, err := l.Present(context.Background(), PresentContext{BeatPremise: "test"}); err != nil {
+		t.Fatalf("Present failed: %v", err)
+	}
+	if gotAuth != "Bearer test-secret-key" {
+		t.Fatalf("expected Authorization header %q, got %q", "Bearer test-secret-key", gotAuth)
+	}
+}
+
+func TestLocalNoAuthorizationHeaderWhenAPIKeyEmpty(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{
+			Choices: []struct {
+				Message chatMessage `json:"message"`
+			}{{Message: chatMessage{Content: "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	l := NewLocal(server.URL, "mistral-7b")
+	if _, err := l.Present(context.Background(), PresentContext{BeatPremise: "test"}); err != nil {
+		t.Fatalf("Present failed: %v", err)
+	}
+	if gotAuth != "" {
+		t.Fatalf("expected no Authorization header, got %q", gotAuth)
+	}
+}
