@@ -31,11 +31,13 @@ type Local struct {
 
 // NewLocal returns a Local narrator with a sane request timeout. Local
 // inference is slower than a hosted API, so the default is generous.
-func NewLocal(baseURL, model string) *Local {
+func NewLocal(baseURL, model, systemPrompt, apiKey string) *Local {
 	return &Local{
-		BaseURL:    strings.TrimRight(baseURL, "/"),
-		Model:      model,
-		HTTPClient: &http.Client{Timeout: 120 * time.Second},
+		BaseURL:      strings.TrimRight(baseURL, "/"),
+		Model:        model,
+		SystemPrompt: systemPrompt,
+		APIKey:       apiKey,
+		HTTPClient:   &http.Client{Timeout: 120 * time.Second},
 	}
 }
 

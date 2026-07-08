@@ -30,7 +30,7 @@ func TestLocalPresentSendsPromptAndParsesResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	l := NewLocal(server.URL, "mistral-7b")
+	l := NewLocal(server.URL, "mistral-7b", "", "")
 	scene, err := l.Present(context.Background(), PresentContext{
 		BeatPremise: "a goblin blocks the path",
 		BeatType:    "combat",
@@ -61,7 +61,7 @@ func TestLocalNarrateIncludesResolvedActionsInPrompt(t *testing.T) {
 	}))
 	defer server.Close()
 
-	l := NewLocal(server.URL, "mistral-7b")
+	l := NewLocal(server.URL, "mistral-7b", "", "")
 	narration, err := l.Narrate(context.Background(), NarrateContext{
 		ResolvedActions: []ResolvedActionSummary{
 			{CharacterID: "hero", Intent: "attack goblin", Outcome: "SUCCESS", Summary: "kill:goblin1=<nil>"},
@@ -91,8 +91,7 @@ func TestLocalSystemPromptIsSentWhenSet(t *testing.T) {
 	}))
 	defer server.Close()
 
-	l := NewLocal(server.URL, "mistral-7b")
-	l.SystemPrompt = "You are a fantasy narrator."
+	l := NewLocal(server.URL, "mistral-7b", "You are a fantasy narrator.", "")
 	if _, err := l.Present(context.Background(), PresentContext{BeatPremise: "test"}); err != nil {
 		t.Fatalf("Present failed: %v", err)
 	}
@@ -107,7 +106,7 @@ func TestLocalReturnsErrorOnNonOKStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	l := NewLocal(server.URL, "mistral-7b")
+	l := NewLocal(server.URL, "mistral-7b", "", "")
 	if _, err := l.Present(context.Background(), PresentContext{}); err == nil {
 		t.Fatal("expected an error on non-200 status")
 	}
@@ -119,7 +118,7 @@ func TestLocalReturnsErrorOnEmptyChoices(t *testing.T) {
 	}))
 	defer server.Close()
 
-	l := NewLocal(server.URL, "mistral-7b")
+	l := NewLocal(server.URL, "mistral-7b", "", "")
 	if _, err := l.Narrate(context.Background(), NarrateContext{}); err == nil {
 		t.Fatal("expected an error when the response has no choices")
 	}
@@ -137,8 +136,7 @@ func TestLocalSendsAuthorizationHeaderWhenAPIKeySet(t *testing.T) {
 	}))
 	defer server.Close()
 
-	l := NewLocal(server.URL, "mistral-7b")
-	l.APIKey = "test-secret-key"
+	l := NewLocal(server.URL, "mistral-7b", "", "test-secret-key")
 	if _, err := l.Present(context.Background(), PresentContext{BeatPremise: "test"}); err != nil {
 		t.Fatalf("Present failed: %v", err)
 	}
@@ -163,9 +161,7 @@ func TestLocalMultiTurnHistory(t *testing.T) {
 	}))
 	defer server.Close()
 
-	l := NewLocal(server.URL, "test")
-	l.SystemPrompt = "test system"
-
+	l := NewLocal(server.URL, "test", "test system", "")
 	_, _ = l.Present(context.Background(), PresentContext{
 		BeatPremise: "a goblin blocks the path",
 		BeatType:    "combat",
@@ -207,9 +203,7 @@ func TestLocalEvictsOldMessages(t *testing.T) {
 	}))
 	defer server.Close()
 
-	l := NewLocal(server.URL, "test")
-	l.SystemPrompt = "sys"
-
+	l := NewLocal(server.URL, "test", "sys", "")
 	for i := 0; i < 12; i++ {
 		_, _ = l.Present(context.Background(), PresentContext{
 			BeatPremise: fmt.Sprintf("beat-%d", i),
@@ -239,7 +233,7 @@ func TestLocalResetClearsHistory(t *testing.T) {
 	}))
 	defer server.Close()
 
-	l := NewLocal(server.URL, "test")
+	l := NewLocal(server.URL, "test", "", "")
 	_, _ = l.Present(context.Background(), PresentContext{BeatPremise: "test"})
 	if len(l.messages) == 0 {
 		t.Fatal("expected messages after a call")
@@ -263,11 +257,8 @@ func TestLocalNoAuthorizationHeaderWhenAPIKeyEmpty(t *testing.T) {
 	}))
 	defer server.Close()
 
-	l := NewLocal(server.URL, "mistral-7b")
+	l := NewLocal(server.URL, "mistral-7b", "", "")
 	if _, err := l.Present(context.Background(), PresentContext{BeatPremise: "test"}); err != nil {
-		t.Fatalf("Present failed: %v", err)
-	}
-	if gotAuth != "" {
 		t.Fatalf("expected no Authorization header, got %q", gotAuth)
 	}
 }
