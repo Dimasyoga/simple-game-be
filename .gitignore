@@ -1,3 +1,4 @@
 /simple-game-be
 /simple-game-be.exe
 *.test
+**/logs

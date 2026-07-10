@@ -27,10 +27,11 @@ type NarrateContext struct {
 // Kept separate from engine.ResolvedAction so this package has no dependency
 // on the engine package (the seam stays one-directional: engine -> narrator).
 type ResolvedActionSummary struct {
-	CharacterID string
-	Intent      string
-	Outcome     string
-	Summary     string // engine-provided plain-language delta summary
+	CharacterID   string
+	CharacterName string
+	Intent        string
+	Outcome       string
+	Summary       string // engine-provided plain-language delta summary
 }
 
 // Narrator produces prose only. It never returns state, dice, or deltas.
@@ -53,7 +54,7 @@ func (Stub) Present(_ context.Context, pc PresentContext) (string, error) {
 func (Stub) Narrate(_ context.Context, nc NarrateContext) (string, error) {
 	out := "[stub narration]"
 	for _, a := range nc.ResolvedActions {
-		out += " " + a.CharacterID + ":" + a.Intent + "=" + a.Outcome
+		out += " " + a.CharacterName + ":" + a.Intent + "=" + a.Outcome
 	}
 	return out, nil
 }

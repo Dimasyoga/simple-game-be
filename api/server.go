@@ -23,6 +23,14 @@ import (
 
 // Server holds every in-memory run. There is no persistence in v1
 // (spec.md §10/§11).
+type ScenarioConfig struct {
+	Skeleton      []engine.SkeletonBeat
+	BeatPool      []engine.BeatType
+	BeatOverrides map[int]engine.BeatType
+	CheckFn       engine.CheckResolver
+	EffectFn      engine.EffectResolver
+}
+
 type Server struct {
 	mu     sync.Mutex
 	runs   map[string]*managedRun
@@ -35,6 +43,8 @@ type Server struct {
 
 	WindowDuration     time.Duration
 	LootWindowDuration time.Duration
+
+	scenarios map[string]*ScenarioConfig
 }
 
 func NewServer(n narrator.Narrator) *Server {
@@ -44,7 +54,12 @@ func NewServer(n narrator.Narrator) *Server {
 		NewRNG:             func() engine.RNG { return engine.NewSeededRNG(time.Now().UnixNano()) },
 		WindowDuration:     5 * time.Minute,
 		LootWindowDuration: 30 * time.Second,
+		scenarios:          make(map[string]*ScenarioConfig),
 	}
+}
+
+func (s *Server) RegisterScenario(name string, cfg *ScenarioConfig) {
+	s.scenarios[name] = cfg
 }
 
 // Handler returns the full contract.md HTTP surface as an http.Handler.
@@ -69,6 +84,7 @@ type managedRun struct {
 	rng      engine.RNG
 	started  bool
 	storyLog []StoryLogEntry
+	scenario *ScenarioConfig
 }
 
 func (mr *managedRun) appendStoryLog(e StoryLogEntry) {
@@ -217,7 +233,7 @@ func (s *Server) driveRun(mr *managedRun) {
 			return
 		}
 
-		result, err := mr.room.RunNextClause(ctx, s.Narrator, mr.rng, mr.catalog, demoCheck, demoEffect, engine.LootByRoll)
+		result, err := mr.room.RunNextClause(ctx, s.Narrator, mr.rng, mr.catalog, mr.scenario.CheckFn, mr.scenario.EffectFn, engine.LootByRoll)
 		if err != nil {
 			mr.hub.broadcast("error", ErrorEvent{Code: "clause_failed", Message: err.Error()})
 			return
@@ -252,10 +268,20 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	rng := s.NewRNG()
-	run := engine.NewRun(runID, demoSkeleton(), nil, rng, demoBeatPool(), demoBeatOverrides())
+	cfg := s.scenarios[req.Scenario]
+	if cfg == nil {
+		cfg = &ScenarioConfig{
+			Skeleton:      demoSkeleton(),
+			BeatPool:      demoBeatPool(),
+			BeatOverrides: demoBeatOverrides(),
+			CheckFn:       demoCheck,
+			EffectFn:      demoEffect,
+		}
+	}
+	run := engine.NewRun(runID, cfg.Skeleton, nil, rng, cfg.BeatPool, cfg.BeatOverrides)
 	rm := room.NewRoom(run, room.RealClock(), s.WindowDuration, s.LootWindowDuration)
 
-	mr := &managedRun{id: runID, room: rm, hub: newHub(), catalog: engine.NewItemCatalog(), rng: rng}
+	mr := &managedRun{id: runID, room: rm, hub: newHub(), catalog: engine.NewItemCatalog(), rng: rng, scenario: cfg}
 	rm.Hooks = mr.hooks()
 
 	s.mu.Lock()

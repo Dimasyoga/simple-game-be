@@ -112,7 +112,25 @@ func BeginClause(
 	clause.Phase = PhaseResolve
 	clause.SceneState = SceneState{}
 	seedSceneFromWorld(&clause.SceneState, run.WorldState)
+	// Inject clause index into character conditions so EffectResolver can
+	// read it for context-aware loot drops (demo use; harmless for production).
+	idxTag := fmt.Sprintf("clause_idx:%d", run.CurrentClauseIndex)
+	for id, c := range characters {
+		c.Status.Conditions = append(c.Status.Conditions, idxTag)
+		characters[id] = c
+	}
 	clause.ResolvedActions = Resolve(rng, clause.InitiativeOrder, parsed, characters, beatType, &clause.SceneState, checkFn, effectFn)
+	// Clean up injected condition.
+	for id, c := range characters {
+		var filtered []string
+		for _, cond := range c.Status.Conditions {
+			if cond != idxTag {
+				filtered = append(filtered, cond)
+			}
+		}
+		c.Status.Conditions = filtered
+		characters[id] = c
+	}
 	clause.DroppedItems = extractDroppedItems(clause.ResolvedActions)
 
 	return &ClauseInProgress{clause: clause, scenePlain: scenePlain, characters: characters}, nil
@@ -153,7 +171,7 @@ func FinishClause(
 	narrationPlain, err := n.Narrate(ctx, narrator.NarrateContext{
 		ProseSummary:    run.ProseSummary,
 		RelevantState:   worldStateAsMap(run.WorldState),
-		ResolvedActions: summarizeResolved(clause.ResolvedActions),
+		ResolvedActions: summarizeResolved(clause.ResolvedActions, characters),
 	})
 	if err != nil {
 		return ClauseResult{}, fmt.Errorf("engine: NARRATE: %w", err)
@@ -262,14 +280,16 @@ func extractDroppedItems(resolved []ResolvedAction) []Item {
 	return items
 }
 
-func summarizeResolved(resolved []ResolvedAction) []narrator.ResolvedActionSummary {
+func summarizeResolved(resolved []ResolvedAction, characters map[string]Character) []narrator.ResolvedActionSummary {
 	out := make([]narrator.ResolvedActionSummary, 0, len(resolved))
 	for _, ra := range resolved {
+		c := characters[ra.CharacterID]
 		out = append(out, narrator.ResolvedActionSummary{
-			CharacterID: ra.CharacterID,
-			Intent:      ra.Intent,
-			Outcome:     string(ra.Outcome),
-			Summary:     summarizeDeltas(ra.Deltas),
+			CharacterID:   ra.CharacterID,
+			CharacterName: c.Name,
+			Intent:        ra.Intent,
+			Outcome:       string(ra.Outcome),
+			Summary:       summarizeDeltas(ra.Deltas),
 		})
 	}
 	return out

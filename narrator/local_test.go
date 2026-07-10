@@ -64,7 +64,7 @@ func TestLocalNarrateIncludesResolvedActionsInPrompt(t *testing.T) {
 	l := NewLocal(server.URL, "mistral-7b", "", "")
 	narration, err := l.Narrate(context.Background(), NarrateContext{
 		ResolvedActions: []ResolvedActionSummary{
-			{CharacterID: "hero", Intent: "attack goblin", Outcome: "SUCCESS", Summary: "kill:goblin1=<nil>"},
+			{CharacterID: "hero", CharacterName: "Aria", Intent: "attack goblin", Outcome: "SUCCESS", Summary: "kill:goblin1=<nil>"},
 		},
 	})
 	if err != nil {
@@ -74,7 +74,7 @@ func TestLocalNarrateIncludesResolvedActionsInPrompt(t *testing.T) {
 		t.Fatalf("unexpected narration: %q", narration)
 	}
 	prompt := gotReq.Messages[len(gotReq.Messages)-1].Content
-	if !strings.Contains(prompt, "hero attempted \"attack goblin\" -> SUCCESS") {
+	if !strings.Contains(prompt, "Aria attempted \"attack goblin\" -> SUCCESS") {
 		t.Fatalf("expected resolved action in prompt, got: %s", prompt)
 	}
 }
@@ -168,7 +168,7 @@ func TestLocalMultiTurnHistory(t *testing.T) {
 	})
 	_, _ = l.Narrate(context.Background(), NarrateContext{
 		ResolvedActions: []ResolvedActionSummary{
-			{CharacterID: "hero", Intent: "attack", Outcome: "SUCCESS"},
+			{CharacterID: "hero", CharacterName: "Aria", Intent: "attack", Outcome: "SUCCESS"},
 		},
 	})
 

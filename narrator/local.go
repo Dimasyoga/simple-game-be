@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"sort"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -25,6 +27,7 @@ type Local struct {
 	SystemPrompt string // optional; sent as the system message on every call
 	APIKey       string // optional; sent as Bearer token in Authorization header
 	HTTPClient   *http.Client
+	LogFile      string // optional; if set, logs request/response JSON payloads to this file
 
 	messages []chatMessage
 }
@@ -85,6 +88,9 @@ func (l *Local) complete(ctx context.Context, fullPrompt string, historyData str
 	if err != nil {
 		return "", fmt.Errorf("narrator: marshal request: %w", err)
 	}
+	if l.LogFile != "" {
+		logPayload(l.LogFile, "REQUEST", string(body))
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, l.BaseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -110,8 +116,16 @@ func (l *Local) complete(ctx context.Context, fullPrompt string, historyData str
 		return "", fmt.Errorf("narrator: unexpected status %d from %s", resp.StatusCode, l.BaseURL)
 	}
 
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("narrator: read response: %w", err)
+	}
+	if l.LogFile != "" {
+		logPayload(l.LogFile, "RESPONSE", string(respBody))
+	}
+
 	var parsed chatCompletionsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return "", fmt.Errorf("narrator: decode response: %w", err)
 	}
 	if len(parsed.Choices) == 0 {
@@ -136,65 +150,16 @@ func (l *Local) evict() {
 	l.messages = l.messages[len(l.messages)-keep:]
 }
 
-func buildPresentPrompt(pc PresentContext) (fullPrompt string, historyData string) {
-	var fb, hb strings.Builder
-
-	if len(pc.RelevantState) > 0 {
-		stateStr := formatState(pc.RelevantState)
-		fb.WriteString("Describe the upcoming scene in plain prose. Do not decide outcomes; only set the scene.\n\nRelevant known facts:\n" + stateStr + "\n")
-		hb.WriteString("Relevant known facts:\n" + stateStr + "\n")
-	} else {
-		fb.WriteString("Describe the upcoming scene in plain prose. Do not decide outcomes; only set the scene.\n\n")
+func logPayload(path, label, payload string) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return
 	}
-
-	fb.WriteString("Beat premise: " + pc.BeatPremise + "\n")
-	hb.WriteString("Beat premise: " + pc.BeatPremise + "\n")
-	if pc.BeatType != "" {
-		fb.WriteString("Beat type: " + pc.BeatType + "\n")
-		hb.WriteString("Beat type: " + pc.BeatType + "\n")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
 	}
-	fb.WriteString("\nWrite the scene now.")
-
-	return fb.String(), hb.String()
+	defer f.Close()
+	fmt.Fprintf(f, "[%s] %s\n%s\n\n", time.Now().Format(time.RFC3339), label, payload)
 }
 
-func buildNarratePrompt(nc NarrateContext) (fullPrompt string, historyData string) {
-	var fb, hb strings.Builder
 
-	fb.WriteString("Narrate what happened this turn, in the exact order given. Do not change or contradict any outcome.\n\n")
-
-	if len(nc.RelevantState) > 0 {
-		stateStr := formatState(nc.RelevantState)
-		fb.WriteString("Relevant known facts:\n" + stateStr + "\n")
-		hb.WriteString("Relevant known facts:\n" + stateStr + "\n")
-	}
-
-	fb.WriteString("Resolved actions (already decided; narrate faithfully):\n")
-	hb.WriteString("Resolved actions:\n")
-	for _, a := range nc.ResolvedActions {
-		line := fmt.Sprintf("- %s attempted %q -> %s", a.CharacterID, a.Intent, a.Outcome)
-		if a.Summary != "" {
-			line += " (" + a.Summary + ")"
-		}
-		line += "\n"
-		fb.WriteString(line)
-		hb.WriteString(line)
-	}
-	fb.WriteString("\nWrite the narration now.")
-
-	return fb.String(), hb.String()
-}
-
-func formatState(state map[string]any) string {
-	keys := make([]string, 0, len(state))
-	for k := range state {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(fmt.Sprintf("- %s: %v\n", k, state[k]))
-	}
-	return b.String()
-}
