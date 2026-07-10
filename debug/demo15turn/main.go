@@ -17,34 +17,34 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var demoActionTexts = []string{
-	0:  "I step into the forest, eyes scanning the tree line",
-	1:  "I follow the narrow path through the undergrowth",
-	2:  "I investigate the strange tracks on the ground",
-	3:  "I examine the ruins of the old shrine",
-	4:  "I draw my sword and attack the shadow wolves",
-	5:  "I search the archway for a hidden lever",
-	6:  "I examine the locked gate for a keyhole",
-	7:  "I ask the hermit about the forest's curse",
-	8:  "I climb out of the sinkhole",
-	9:  "I drink from the hidden spring",
-	10: "I cross the bridge of roots",
-	11: "I break through the witch's illusions",
-	12: "I approach the heart of the forest",
-	13: "I speak the words to lift the curse",
-	14: "I watch the dawn break over the clearing",
+var demoActionTexts = map[string]string{
+	"0:0": "I step into the forest, eyes scanning the tree line",
+	"0:1": "I follow the narrow path through the undergrowth",
+	"0:2": "I investigate the strange tracks on the ground",
+	"0:3": "I examine the ruins of the old shrine",
+	"0:4": "I draw my sword and attack the shadow wolves",
+	"1:0": "I search the archway for a hidden lever",
+	"1:1": "I examine the locked gate for a keyhole",
+	"1:2": "I ask the hermit about the forest's curse",
+	"1:3": "I climb out of the sinkhole",
+	"1:4": "I drink from the hidden spring",
+	"2:0": "I cross the bridge of roots",
+	"2:1": "I break through the witch's illusions",
+	"2:2": "I approach the heart of the forest",
+	"2:3": "I speak the words to lift the curse",
+	"2:4": "I watch the dawn break over the clearing",
 }
 
-func shouldClaimLoot(clauseIdx int) bool {
-	return clauseIdx != 11
+func shouldClaimLoot(chapterIdx, clauseOrder int) bool {
+	return !(chapterIdx == 2 && clauseOrder == 1)
 }
 
 type turnResult struct {
-	ClauseIndex int      `json:"clauseIndex"`
-	Scene       string   `json:"scene"`
-	Narration   string   `json:"narration"`
-	Action      string   `json:"action"`
-	LootClaimed []string `json:"lootClaimed"`
+	ChapterIndex int    `json:"chapterIndex"`
+	ClauseOrder  int    `json:"clauseOrder"`
+	Scene        string `json:"scene"`
+	Narration    string `json:"narration"`
+	Action       string `json:"action"`
 }
 
 type wsMessage struct {
@@ -53,7 +53,8 @@ type wsMessage struct {
 }
 
 type windowOpenedData struct {
-	ClauseIndex int `json:"clauseIndex"`
+	ChapterIndex int `json:"chapterIndex"`
+	ClauseOrder  int `json:"clauseOrder"`
 }
 
 type lootWindowData struct {
@@ -64,7 +65,8 @@ type lootWindowData struct {
 }
 
 type clauseNarratedData struct {
-	ClauseIndex    int    `json:"clauseIndex"`
+	ChapterIndex   int    `json:"chapterIndex"`
+	ClauseOrder    int    `json:"clauseOrder"`
 	NarrationPlain string `json:"narrationPlain"`
 }
 
@@ -89,9 +91,10 @@ type lootClaimResponse struct {
 }
 
 type storyLogEntry struct {
-	ClauseIndex int    `json:"clauseIndex"`
-	Kind        string `json:"kind"`
-	TextPlain   string `json:"textPlain"`
+	ChapterIndex int    `json:"chapterIndex"`
+	ClauseOrder  int    `json:"clauseOrder"`
+	Kind         string `json:"kind"`
+	TextPlain    string `json:"textPlain"`
 }
 
 type playerView struct {
@@ -126,8 +129,8 @@ func getStoryLog(runID string) []storyLogEntry {
 	return view.StoryLog
 }
 
-func postAction(runID string, clauseIdx int, charID, rawText string) {
-	url := fmt.Sprintf("http://localhost:18080/runs/%s/clauses/%d/action", runID, clauseIdx)
+func postAction(runID string, chapterIdx, clauseOrder int, charID, rawText string) {
+	url := fmt.Sprintf("http://localhost:18080/runs/%s/chapters/%d/clauses/%d/action", runID, chapterIdx, clauseOrder)
 	var resp actionResponse
 	_ = httpPost(url, map[string]string{"characterId": charID, "rawText": rawText}, &resp)
 }
@@ -193,11 +196,9 @@ func main() {
 	srv.WindowDuration = 5 * time.Second
 	srv.LootWindowDuration = 3 * time.Second
 	srv.RegisterScenario("demo15", &api.ScenarioConfig{
-		Skeleton:      demoSkeleton(),
-		BeatPool:      demoBeatPool(),
-		BeatOverrides: demoBeatOverrides(),
-		CheckFn:       demoCheck,
-		EffectFn:      demoEffect,
+		Gameplay: demoGameplay(),
+		CheckFn:  demoCheck,
+		EffectFn: demoEffect,
 	})
 
 	httpSrv := &http.Server{Addr: ":18080", Handler: srv.Handler()}
@@ -228,7 +229,11 @@ func main() {
 	lw := newLogWriter()
 	var results []turnResult
 	var mu sync.Mutex
-	clauseCh := make(chan int, 15)
+	type clausePos struct {
+		ChapterIndex int
+		ClauseOrder  int
+	}
+	clauseCh := make(chan clausePos, 15)
 
 	go func() {
 		for {
@@ -241,17 +246,17 @@ func main() {
 			case "window_opened":
 				var data windowOpenedData
 				if err := json.Unmarshal(msg.Data, &data); err == nil {
-					idx := data.ClauseIndex
-					postAction(runID, idx, charID, demoActionTexts[idx])
+					key := fmt.Sprintf("%d:%d", data.ChapterIndex, data.ClauseOrder)
+					postAction(runID, data.ChapterIndex, data.ClauseOrder, charID, demoActionTexts[key])
 				}
 
 			case "loot_window":
 				var data lootWindowData
 				if err := json.Unmarshal(msg.Data, &data); err == nil {
 					mu.Lock()
-					currentIdx := len(results)
+					current := results[len(results)-1]
 					mu.Unlock()
-					if shouldClaimLoot(currentIdx) {
+					if shouldClaimLoot(current.ChapterIndex, current.ClauseOrder) {
 						for _, item := range data.Items {
 							claimLoot(runID, item.ItemID, charID)
 						}
@@ -261,7 +266,13 @@ func main() {
 			case "clause_narrated":
 				var data clauseNarratedData
 				if err := json.Unmarshal(msg.Data, &data); err == nil {
-					clauseCh <- data.ClauseIndex
+					mu.Lock()
+					results = append(results, turnResult{
+						ChapterIndex: data.ChapterIndex,
+						ClauseOrder:  data.ClauseOrder,
+					})
+					mu.Unlock()
+					clauseCh <- clausePos{ChapterIndex: data.ChapterIndex, ClauseOrder: data.ClauseOrder}
 				}
 
 			case "run_ended":
@@ -271,10 +282,10 @@ func main() {
 		}
 	}()
 
-	for clauseIdx := range clauseCh {
+	for cp := range clauseCh {
 		var scene, narration string
 		for _, e := range getStoryLog(runID) {
-			if e.ClauseIndex == clauseIdx {
+			if e.ChapterIndex == cp.ChapterIndex && e.ClauseOrder == cp.ClauseOrder {
 				if e.Kind == "scene" {
 					scene = e.TextPlain
 				} else if e.Kind == "narration" {
@@ -283,18 +294,20 @@ func main() {
 			}
 		}
 
+		key := fmt.Sprintf("%d:%d", cp.ChapterIndex, cp.ClauseOrder)
 		fmt.Println("scene---\n", scene)
-		fmt.Println("action---\n", demoActionTexts[clauseIdx])
+		fmt.Println("action---\n", demoActionTexts[key])
 		fmt.Println("narration---\n", narration)
 
 		tr := turnResult{
-			ClauseIndex: clauseIdx,
-			Scene:       scene,
-			Narration:   narration,
-			Action:      demoActionTexts[clauseIdx],
+			ChapterIndex: cp.ChapterIndex,
+			ClauseOrder:  cp.ClauseOrder,
+			Scene:        scene,
+			Narration:    narration,
+			Action:       demoActionTexts[key],
 		}
 		mu.Lock()
-		results = append(results, tr)
+		results[len(results)-1] = tr
 		mu.Unlock()
 		lw.append(tr)
 	}

@@ -17,7 +17,7 @@ func TestHeadOnVsSneakResolvesByInitiativeOrder(t *testing.T) {
 		"sneaker":  {CharacterID: "sneaker", Intent: "sneak past", Legal: true},
 	}
 
-	checkFn := func(a ParsedAction, c Character, bt BeatType, scene SceneState) CheckSpec {
+	checkFn := func(a ParsedAction, c Character, bt ClauseType, scene SceneState) CheckSpec {
 		if a.CharacterID == "sneaker" {
 			dc := 10
 			if alerted, _ := scene.Facts["alerted"].(bool); alerted {
@@ -27,7 +27,7 @@ func TestHeadOnVsSneakResolvesByInitiativeOrder(t *testing.T) {
 		}
 		return CheckSpec{DC: 8}
 	}
-	effectFn := func(a ParsedAction, c Character, bt BeatType, outcome Outcome) []StateDelta {
+	effectFn := func(a ParsedAction, c Character, bt ClauseType, outcome Outcome) []StateDelta {
 		if a.CharacterID == "attacker" {
 			return []StateDelta{{Op: "add_flag", Target: "alerted", Value: true}}
 		}
@@ -36,12 +36,12 @@ func TestHeadOnVsSneakResolvesByInitiativeOrder(t *testing.T) {
 
 	rng := constRNG{val: 15} // fixed roll: 15 >= 10 (succeeds unalerted), 15 < 18 (fails alerted, DC 20 - 2)
 
-	resolvedAttackerFirst := Resolve(rng, []string{"attacker", "sneaker"}, actions, characters, BeatCombat, &SceneState{}, checkFn, effectFn)
+	resolvedAttackerFirst := Resolve(rng, []string{"attacker", "sneaker"}, actions, characters, ClauseConflict, &SceneState{}, checkFn, effectFn)
 	if got := outcomeFor(resolvedAttackerFirst, "sneaker"); got != OutcomeFail {
 		t.Fatalf("attacker-first: expected sneak to fail once alerted, got %s", got)
 	}
 
-	resolvedSneakerFirst := Resolve(rng, []string{"sneaker", "attacker"}, actions, characters, BeatCombat, &SceneState{}, checkFn, effectFn)
+	resolvedSneakerFirst := Resolve(rng, []string{"sneaker", "attacker"}, actions, characters, ClauseConflict, &SceneState{}, checkFn, effectFn)
 	if got := outcomeFor(resolvedSneakerFirst, "sneaker"); got != OutcomeSuccess {
 		t.Fatalf("sneaker-first: expected sneak to succeed before alert, got %s", got)
 	}
@@ -56,13 +56,13 @@ func TestPersonalityBiasShiftsOddsQueuesDeltaNeverVetoes(t *testing.T) {
 	actions := map[string]ParsedAction{
 		"pc1": {CharacterID: "pc1", Intent: "betray ally", Legal: true},
 	}
-	checkFn := func(ParsedAction, Character, BeatType, SceneState) CheckSpec {
+	checkFn := func(ParsedAction, Character, ClauseType, SceneState) CheckSpec {
 		return CheckSpec{DC: 15, PersonalityBias: -5, AgainstMorality: true}
 	}
-	effectFn := func(ParsedAction, Character, BeatType, Outcome) []StateDelta { return nil }
+	effectFn := func(ParsedAction, Character, ClauseType, Outcome) []StateDelta { return nil }
 
 	rng := constRNG{val: 18} // 18 - 5 = 13 < DC 15: bias is what tips this to a fail
-	resolved := Resolve(rng, []string{"pc1"}, actions, characters, BeatSocial, &SceneState{}, checkFn, effectFn)
+	resolved := Resolve(rng, []string{"pc1"}, actions, characters, ClauseConflict, &SceneState{}, checkFn, effectFn)
 
 	if len(resolved) != 1 {
 		t.Fatalf("expected 1 resolved action, got %d", len(resolved))

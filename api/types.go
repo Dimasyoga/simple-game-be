@@ -5,8 +5,9 @@ import "simple-game-be/engine"
 // Request/response payloads exactly as shaped in contract.md.
 
 type CreateRunRequest struct {
-	Mode     string `json:"mode"`
-	Scenario string `json:"scenario"`
+	Mode       string `json:"mode"`
+	GameplayID string `json:"gameplayId"`
+	Scenario   string `json:"scenario"`
 }
 
 type CreateRunResponse struct {
@@ -21,6 +22,16 @@ type JoinRequest struct {
 
 type JoinResponse struct {
 	CharacterID string `json:"characterId"`
+	IsHost      bool   `json:"isHost"`
+}
+
+type StartRequest struct {
+	CharacterID string `json:"characterId"`
+}
+
+type StartResponse struct {
+	Started bool   `json:"started"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 type ActionRequest struct {
@@ -83,9 +94,10 @@ type CharacterSheetPublic struct {
 }
 
 type StoryLogEntry struct {
-	ClauseIndex int    `json:"clauseIndex"`
-	Kind        string `json:"kind"` // "scene" | "narration"
-	TextPlain   string `json:"textPlain"`
+	ChapterIndex int    `json:"chapterIndex"`
+	ClauseOrder  int    `json:"clauseOrder"`
+	Kind         string `json:"kind"` // "scene" | "narration"
+	TextPlain    string `json:"textPlain"`
 }
 
 type WindowView struct {
@@ -94,7 +106,8 @@ type WindowView struct {
 
 type PlayerView struct {
 	RunID        string                 `json:"runId"`
-	ClauseIndex  int                    `json:"clauseIndex"`
+	ChapterIndex int                    `json:"chapterIndex"`
+	ClauseOrder  int                    `json:"clauseOrder"`
 	Phase        string                 `json:"phase"`
 	Self         CharacterSheet         `json:"self"`
 	Party        []CharacterSheetPublic `json:"party"`
@@ -121,14 +134,22 @@ type discussionSendMessage struct {
 	Text  string `json:"text"`
 }
 
+type ChapterStartedEvent struct {
+	ChapterIndex int    `json:"chapterIndex"`
+	Title        string `json:"title"`
+}
+
 type ClausePresentedEvent struct {
-	ClauseIndex int    `json:"clauseIndex"`
-	ScenePlain  string `json:"scenePlain"`
+	ChapterIndex  int    `json:"chapterIndex"`
+	ClauseOrder   int    `json:"clauseOrder"`
+	ScenePlain    string `json:"scenePlain"`
+	RequiresInput bool   `json:"requiresInput"`
 }
 
 type WindowOpenedEvent struct {
-	ClauseIndex int    `json:"clauseIndex"`
-	Deadline    string `json:"deadline"`
+	ChapterIndex int    `json:"chapterIndex"`
+	ClauseOrder  int    `json:"clauseOrder"`
+	Deadline     string `json:"deadline"`
 }
 
 type InputStatusPer struct {
@@ -143,11 +164,13 @@ type InputStatusEvent struct {
 }
 
 type ResolvingEvent struct {
-	ClauseIndex int `json:"clauseIndex"`
+	ChapterIndex int `json:"chapterIndex"`
+	ClauseOrder  int `json:"clauseOrder"`
 }
 
 type ClauseNarratedEvent struct {
-	ClauseIndex    int    `json:"clauseIndex"`
+	ChapterIndex   int    `json:"chapterIndex"`
+	ClauseOrder    int    `json:"clauseOrder"`
 	NarrationPlain string `json:"narrationPlain"`
 	StateSummary   string `json:"stateSummary"`
 }

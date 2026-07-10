@@ -11,7 +11,8 @@ import (
 // transport type. Every field is optional; a nil Hooks or nil field is a
 // silent no-op.
 type Hooks struct {
-	OnScenePresented func(scenePlain string)
+	OnChapterStarted func(chapterIndex int, title string)
+	OnScenePresented func(scenePlain string, requiresInput bool)
 	OnWindowOpened   func(deadline time.Time)
 	OnInputStatus    func(actingIDs []string, status map[string]engine.InputTerminal)
 	OnResolving      func()
@@ -19,9 +20,15 @@ type Hooks struct {
 	OnLootResolved   func(claim engine.LootClaim)
 }
 
-func (h *Hooks) scenePresented(s string) {
+func (h *Hooks) chapterStarted(chapterIndex int, title string) {
+	if h != nil && h.OnChapterStarted != nil {
+		h.OnChapterStarted(chapterIndex, title)
+	}
+}
+
+func (h *Hooks) scenePresented(s string, requiresInput bool) {
 	if h != nil && h.OnScenePresented != nil {
-		h.OnScenePresented(s)
+		h.OnScenePresented(s, requiresInput)
 	}
 }
 

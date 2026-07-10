@@ -59,29 +59,64 @@ loot claim assigns them into exactly one `Character.inventory` (atomic).
 
 ---
 
-## Story / run
+## Gameplay / run
+
+A **gameplay** is an authored template (see `design.md`): ordered **chapters**,
+each containing ordered **clause templates**. It is loaded at run start and is
+invariant for the run. (This replaces the earlier "skeleton + hidden random beat
+deck" model — clause structure is now authored, not rolled.)
 
 ```
-Run {
+Gameplay {                      // the authored template (data, not code)
   id: string
-  skeleton: SkeletonBeat[]      // fixed spine, ordered, invariant for the run
-  beatDeck: BeatType[]          // pre-rolled per skeleton slot, HIDDEN from players
-  currentClauseIndex: int
+  title: string
+  tone: string                  // optional narrator style hint
+  chapters: ChapterTemplate[]   // ordered
+}
+
+ChapterTemplate {
+  index: int
+  title: string
+  clauses: ClauseTemplate[]     // ordered, ~3
+  isFinal: bool                 // last chapter (the climax chapter)
+}
+
+ClauseTemplate {
+  chapterIndex: int
+  order: int                    // position within the chapter (1..N)
+  type: ClauseType              // AUTHORED, extensible
+  description: string           // DM's intent seed for the narrator (NOT player-facing)
+  scriptedDeltas: StateDelta[]? // authored reward/effect applied at COMMIT when
+                                 // requires_input = false (no RESOLVE step to emit
+                                 // deltas from a player action); null/empty for
+                                 // clauses with no unconditional reward
+}
+
+ClauseType = "setup" | "conflict" | "resolution"   // v1; extensible (see design.md)
+// type drives engine behavior via the type->behavior table in design.md:
+//   requires_input?, requires_roll?, reward?
+
+Run {                           // the live run of a Gameplay
+  id: string
+  gameplayId: string
+  mode: "single" | "multi"
+  status: RunStatus
+  hostCharacterId: string?       // the first character to join; null until first join
+  chapterIndex: int             // current chapter
+  clauseOrder: int              // current clause within the chapter
   characters: Character[]
   worldState: WorldState
-  proseSummary: string          // rolling compacted narrative (tier 2 memory)
-  status: string                // "active" | "ended"
+  chapterSummaries: string[]    // one engine-written summary per COMPLETED chapter (tier-2)
 }
 
-SkeletonBeat {
-  index: int
-  role: string                  // "setup" | "rising" | "climax" | "resolution"
-  premise: string               // invariant intent, e.g. "encounter guarding the path"
-  climax: bool
-}
-
-BeatType = "combat" | "discovery" | "social" | "setback" | "puzzle"
+RunStatus = "lobby" | "active" | "ended"
+// lobby : created, awaiting players + start (no LLM, no clock)
+// active: started; clause loop running
+// ended : final chapter's final clause committed
 ```
+
+> A clause is identified within a run by `(chapterIndex, order)`. The old flat
+> `currentClauseIndex` is gone.
 
 ## WorldState (tier-1 canonical, LOSSLESS)
 
@@ -103,12 +138,13 @@ WorldState {
 ## Clause runtime
 
 ```
-Clause {
-  index: int
-  beatType: BeatType
+Clause {                        // the live run of a ClauseTemplate
+  chapterIndex: int
+  order: int
+  type: ClauseType              // from the template; drives requires_input / requires_roll
   phase: ClausePhase
   sceneState: SceneState
-  windowDeadline: timestamp     // server clock; do NOT trust client
+  windowDeadline: timestamp?    // server clock; null if requires_input = false
   inputs: map<characterId, ActionInput>   // one per acting character
   initiativeOrder: characterId[]           // rolled at RESOLVE
   resolvedActions: ResolvedAction[]        // ordered, post-dice
@@ -118,6 +154,9 @@ Clause {
 ClausePhase =
   "PRESENT" | "WINDOW" | "GATE" | "INITIATIVE" |
   "RESOLVE" | "LOOT" | "NARRATE" | "COMMIT"
+
+// A clause with requires_input = false skips WINDOW/GATE/INITIATIVE/RESOLVE and
+// auto-proceeds. A clause with requires_roll = false emits roll = null (below).
 ```
 
 ## Input & resolution
@@ -144,8 +183,8 @@ ParsedAction {                  // output of GATE
 ResolvedAction {                // output of RESOLVE, fed to narrator
   characterId: string
   intent: string
-  roll: DiceResult
-  outcome: Outcome              // SUCCESS | PARTIAL | FAIL
+  roll: DiceResult?             // null when the action was deterministic (no check needed)
+  outcome: Outcome              // SUCCESS | PARTIAL | FAIL | PROCEEDS (deterministic)
   deltas: StateDelta[]          // mutations to apply on COMMIT
 }
 
@@ -157,7 +196,8 @@ DiceResult {
   total: int
 }
 
-Outcome = "SUCCESS" | "PARTIAL" | "FAIL"
+Outcome = "SUCCESS" | "PARTIAL" | "FAIL"   // when a roll happened
+        | "PROCEEDS"                        // deterministic action, no roll (roll = null)
 
 StateDelta {                    // the ONLY way canonical state changes
   op: string                    // "add_flag" | "kill" | "hp" | "add_item" | "morality" | ...
@@ -181,14 +221,24 @@ LootClaim {
 
 ## Invariants (enforce in code / tests)
 
-1. `skeleton` and each `Run.beatDeck` entry are immutable after run start.
+1. The loaded `Gameplay` (chapters + clause templates) is immutable after run
+   start. Clause `type`/`description` are authored data, never mutated at runtime.
 2. Canonical state (`WorldState`, `Character.inventory`, `Character.status`) only
    ever changes via `StateDelta` applied at COMMIT.
 3. A dropped item is in exactly one place at all times: `droppedItems` **or** one
    character's inventory — never both, never neither after LOOT resolves.
 4. Every acting character has exactly one `ActionInput` with a terminal state
-   before RESOLVE begins.
+   before RESOLVE begins (for clauses where `requires_input = true`).
 5. The narrator (LLM) is invoked only in PRESENT and NARRATE, and receives
    already-resolved data in NARRATE. It emits prose only — never StateDeltas.
 6. `windowDeadline` is set from the server clock; barrier fires on
    all-`SUBMITTED`/`PASSED` OR `now >= windowDeadline`.
+7. `chapterSummaries` are **engine-written** (never by the LLM) and appended once
+   per completed chapter; they are injected into later chapters verbatim.
+8. A clause with `requires_roll = false` produces `roll = null` / `outcome =
+   PROCEEDS`; the narrator must not invent a success/failure where none was rolled.
+9. `hostCharacterId` is set once, to the first character that successfully joins,
+   and never changes for the life of the run.
+10. A clause with `requires_input = false` applies its `scriptedDeltas` (if any) at
+    COMMIT unconditionally — no RESOLVE step runs, so no roll/outcome is produced
+    for it.

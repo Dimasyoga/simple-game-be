@@ -45,35 +45,56 @@ type Item struct {
 	Properties map[string]any
 }
 
-// ---- Story / run ----
+// ---- Gameplay / run ----
 
-type Run struct {
-	ID                 string
-	Skeleton           []SkeletonBeat // fixed spine, ordered, invariant for the run
-	BeatDeck           []BeatType     // pre-rolled per skeleton slot, HIDDEN from players
-	CurrentClauseIndex int
-	Characters         []Character
-	WorldState         WorldState
-	ProseSummary       string // rolling compacted narrative (tier 2 memory)
-	Status             string // "active" | "ended"
+// Gameplay is an authored template (data, not code): ordered chapters, each
+// containing ordered clause templates. It is loaded at run start and is
+// invariant for the run (schema.md, design.md).
+type Gameplay struct {
+	ID       string
+	Title    string
+	Tone     string // optional narrator style hint
+	Chapters []ChapterTemplate
 }
 
-type SkeletonBeat struct {
+type ChapterTemplate struct {
 	Index   int
-	Role    string // "setup" | "rising" | "climax" | "resolution"
-	Premise string // invariant intent, e.g. "encounter guarding the path"
-	Climax  bool
+	Title   string
+	Clauses []ClauseTemplate
+	IsFinal bool // last chapter (the climax chapter)
 }
 
-type BeatType string
+type ClauseTemplate struct {
+	ChapterIndex   int
+	Order          int // position within the chapter (1..N)
+	Type           ClauseType
+	Description    string       // DM's intent seed for the narrator; NOT player-facing
+	ScriptedDeltas []StateDelta // authored reward/effect applied at COMMIT when
+	// requires_input = false (no RESOLVE step to emit deltas from a player action)
+}
+
+type ClauseType string
 
 const (
-	BeatCombat    BeatType = "combat"
-	BeatDiscovery BeatType = "discovery"
-	BeatSocial    BeatType = "social"
-	BeatSetback   BeatType = "setback"
-	BeatPuzzle    BeatType = "puzzle"
+	ClauseSetup      ClauseType = "setup"
+	ClauseConflict   ClauseType = "conflict"
+	ClauseResolution ClauseType = "resolution"
 )
+
+type Run struct {
+	ID               string
+	GameplayID       string
+	Gameplay         Gameplay
+	Mode             string // "single" | "multi"
+	Status           string // "lobby" | "active" | "ended"
+	HostCharacterID  string
+	ChapterIndex     int // current chapter
+	ClauseOrder      int // current clause within the chapter
+	Characters       []Character
+	WorldState       WorldState
+	ChapterSummaries []string         // one engine-written summary per COMPLETED chapter (tier-2)
+	ChapterLog       []ResolvedAction // this chapter's resolved actions so far; reset each chapter
+}
 
 // ---- WorldState (tier-1 canonical, LOSSLESS) ----
 
@@ -86,8 +107,9 @@ type WorldState struct {
 // ---- Clause runtime ----
 
 type Clause struct {
-	Index           int
-	BeatType        BeatType
+	ChapterIndex    int
+	Order           int
+	Type            ClauseType
 	Phase           ClausePhase
 	SceneState      SceneState
 	WindowDeadline  int64                  // server clock (unix ms); do NOT trust client
@@ -147,7 +169,7 @@ type ParsedAction struct {
 type ResolvedAction struct {
 	CharacterID string
 	Intent      string
-	Roll        DiceResult
+	Roll        *DiceResult // nil when the action was deterministic (no check needed)
 	Outcome     Outcome
 	Deltas      []StateDelta // mutations to apply on COMMIT
 }
@@ -163,9 +185,10 @@ type DiceResult struct {
 type Outcome string
 
 const (
-	OutcomeSuccess Outcome = "SUCCESS"
-	OutcomePartial Outcome = "PARTIAL"
-	OutcomeFail    Outcome = "FAIL"
+	OutcomeSuccess  Outcome = "SUCCESS"
+	OutcomePartial  Outcome = "PARTIAL"
+	OutcomeFail     Outcome = "FAIL"
+	OutcomeProceeds Outcome = "PROCEEDS" // deterministic action, no roll (roll = nil)
 )
 
 // StateDelta is the ONLY way canonical state changes.

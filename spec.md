@@ -12,12 +12,17 @@ This repository is the **single source of truth** for the game. It owns:
 The frontend renders and captures input only. If a decision affects another
 player or must not be tamperable, it lives here.
 
+> Companion docs: `schema.md` (state model), `rules.md` (resolution semantics),
+> `design.md` (gameplay/chapter/clause structure, authoring, memory — the "why"),
+> `contract.md` (the FE⇄BE API), `components.md`, `tasks.md`.
+
 ## 2. Non-negotiable principles
 
 1. **Engine owns truth; the LLM only narrates.** The model is a stateless
    generator called **last**; it never decides outcomes, memory, or success.
-2. **Fixed skeleton, variable realization.** The arc is invariant engine data;
-   only content varies per run.
+2. **Authored gameplay, variable realization.** The gameplay (chapters + clause
+   templates) is authored data, invariant per run; variety comes from player
+   actions, dice, and LLM prose — not randomized structure. (See `design.md`.)
 3. **Server-authoritative.** Clock, state, dice, ordering — all here. The client
    is never trusted for timing or outcomes.
 4. **Single-player = N=1.** One system; solo is one character.
@@ -27,48 +32,63 @@ player or must not be tamperable, it lives here.
 ## 3. What this repo exposes
 
 Exactly the surface in `contract.md` (REST + WS). Nothing else leaks. Internals
-(rolls, DCs, beat-deck contents, resolution order) are private; the client sees
-only results it is entitled to.
+(rolls, DCs, clause `type`/`description`, resolution order) are private; the client
+sees only results it is entitled to.
 
 ## 4. Story model (engine-owned)
 
-- **Skeleton (spine):** fixed ordered `SkeletonBeat`s; invariant per run.
-- **Beat deck:** a `BeatType` pre-rolled per slot at run start, **hidden** from
-  players; not sent over the contract by default.
-- **Clause:** skeleton beat + rolled type + accumulated state → narrated.
-- **Climax:** must branch on accumulated tier-1 state or it's a bug.
+Hierarchy: **gameplay → chapter → clause** (see `design.md` for the full model).
 
-Details in `schema.md`.
+- **Gameplay:** an authored template; ordered chapters, invariant per run.
+- **Chapter:** ~3 clauses forming a mini-arc; ends → engine writes a summary.
+- **Clause:** the atomic round (narration → input → resolve → narration). Its
+  authored `type` drives whether it needs input and whether dice roll; its
+  `description` is the narrator's seed. Clause structure is **authored, not rolled.**
+- **Final chapter = climax:** must branch on accumulated tier-1 state + prior
+  chapter summaries or it's a bug.
 
-## 5. Memory (two tiers)
+Details in `schema.md`; authoring model in `design.md`.
+
+## 5. Memory (two tiers, chapter-based)
 
 - **Tier 1 — structured canonical state:** kills, inventory, status, flags,
   alignment, relationships. **Lossless, never summarized.**
-- **Tier 2 — narrative prose:** compacted into a rolling summary.
+- **Tier 2 — chapter summaries:** one **engine-written** summary per completed
+  chapter (`chapterSummaries[]`), injected verbatim into later chapters.
 - **Promotion rule:** climax-relevant nuance is promoted into tier-1 flags, never
   left in prose that will be summarized away.
 
-The narrator receives (tier-2 summary + relevant tier-1 state) per call and never
-relies on its own context to remember facts.
+The narrator's context is always `(prior chapter summaries) + (current chapter's
+live clauses) + (relevant tier-1 state)` — bounded regardless of run length. The
+LLM **reads** memory; the engine **writes** it (summaries are never LLM-written).
 
-## 6. Clause pipeline (all backend)
+## 6. Pipeline (all backend)
+
+Outer loop: **for each chapter → for each clause.** Per clause:
 
 ```
-PRESENT   assemble context; [NARRATOR] scene prose; push clause_presented
+PRESENT   assemble context (chapter summaries + this chapter so far + state +
+          clause description/type); [NARRATOR] scene prose; push clause_presented.
+          If type.requires_input = false -> skip to NARRATE/COMMIT.
 WINDOW    open barrier (deadline = serverNow + windowDuration); accept actions;
           fire on all-SUBMITTED/PASSED OR timeout; push window_opened/input_status
 GATE      parse + hard inventory/legality check (pre-generation)
 INITIATIVE roll; deterministic tiebreak
-RESOLVE   apply actions in initiative order vs working scene state; dice → outcome;
+RESOLVE   apply actions in initiative order vs working scene state; roll ONLY when
+          type.requires_roll AND outcome uncertain (else roll=null, PROCEEDS);
           emit StateDeltas; conflicts emerge from ordering
 LOOT      if items dropped: exclusive-claim barrier + non-deadlocking tiebreak;
           assign atomically
 NARRATE   [NARRATOR] renders ordered resolved actions; validate vs structured state
-COMMIT    fold deltas into tier-1 (lossless); promote flags; compact prose; advance
+COMMIT    fold deltas into tier-1 (lossless); promote flags; advance clause
 ```
 
-Full semantics in `rules.md`. Steps GATE→LOOT and COMMIT are pure engine logic and
-MUST be testable with the narrator stubbed.
+On a chapter's last clause committing: **CHAPTER SUMMARY** — engine writes the
+chapter summary deterministically (no LLM), appends to `chapterSummaries[]`,
+advances chapter. After the final chapter: `run_ended`.
+
+Full semantics in `rules.md`. GATE→LOOT, COMMIT, and the chapter-summary step are
+pure engine logic and MUST be testable with the narrator stubbed.
 
 ## 7. Concurrency
 
@@ -95,9 +115,10 @@ MUST be testable with the narrator stubbed.
 
 - A single `Narrator` interface, invoked only in PRESENT and NARRATE, emitting
   prose only.
-- **Hosted first, local last.** Implement against a fast hosted API to validate
-  cadence, then swap a local model (Mistral-7B class) behind the same interface.
-  The engine must not depend on which model is behind it.
+- **Local model, no hosted step.** No hosted API billing available; implement
+  directly against a local model (Mistral-7B class) behind the same interface.
+  The engine must not depend on which model is behind it. Revisit hosted later
+  only if wanted — the interface makes it a drop-in addition, not a rework.
 - Post-generation validation: narrated key facts checked against tier-1 state; on
   contradiction, prefer structured state (optionally re-ask).
 
@@ -106,8 +127,10 @@ Go server; WebSocket rooms; injectable seedable RNG; in-memory room state for v1
 (persistence later). REST + WS per `contract.md`.
 
 ## 11. Out of scope (v1)
-In-character/diegetic discussion; branching skeletons; accounts/persistence;
-local model as the first integration.
+In-character/diegetic discussion; branching chapters (linear gameplay only);
+player-authored gameplays / authoring dashboard (v1 is dev-authored templates, one
+staple story); accounts/persistence; hosted narrator API (local model is the first
+and only integration for now — see `tasks.md` Phase 4/5).
 
 ## 12. Definition of done (core)
 2–3 simulated players complete a multi-clause run with the **narrator stubbed**,

@@ -61,12 +61,12 @@ func TestMissingItemActionNeverResolvesSuccess(t *testing.T) {
 	parsed := Gate(inputs, characters, catalog)
 
 	rng := constRNG{val: 20}
-	checkFn := func(ParsedAction, Character, BeatType, SceneState) CheckSpec {
+	checkFn := func(ParsedAction, Character, ClauseType, SceneState) CheckSpec {
 		return CheckSpec{DC: 1, StatModifier: 99} // would trivially succeed if ever reached
 	}
-	effectFn := func(ParsedAction, Character, BeatType, Outcome) []StateDelta { return nil }
+	effectFn := func(ParsedAction, Character, ClauseType, Outcome) []StateDelta { return nil }
 
-	resolved := Resolve(rng, []string{"pc1"}, parsed, characters, BeatCombat, &SceneState{}, checkFn, effectFn)
+	resolved := Resolve(rng, []string{"pc1"}, parsed, characters, ClauseConflict, &SceneState{}, checkFn, effectFn)
 	if len(resolved) != 1 {
 		t.Fatalf("expected 1 resolved action, got %d", len(resolved))
 	}

@@ -2,84 +2,80 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"simple-game-be/engine"
 )
 
-func demoSkeleton() []engine.SkeletonBeat {
-	return []engine.SkeletonBeat{
-		{Index: 0, Role: "setup", Premise: "the edge of the Sleepless Forest looms ahead"},
-		{Index: 1, Role: "rising", Premise: "a narrow path winds through dense undergrowth"},
-		{Index: 2, Role: "rising", Premise: "strange tracks mark the forest floor"},
-		{Index: 3, Role: "rising", Premise: "a clearing holds the ruins of an old shrine"},
-		{Index: 4, Role: "rising", Premise: "a pack of shadow wolves circles the clearing"},
-		{Index: 5, Role: "rising", Premise: "a moss-covered archway blocks the trail"},
-		{Index: 6, Role: "rising", Premise: "a locked gate guards the inner grove"},
-		{Index: 7, Role: "rising", Premise: "a hermit in the grove offers cryptic advice"},
-		{Index: 8, Role: "rising", Premise: "the path collapses into a sinkhole"},
-		{Index: 9, Role: "rising", Premise: "a hidden spring restores vitality"},
-		{Index: 10, Role: "rising", Premise: "a bridge of roots spans a ravine"},
-		{Index: 11, Role: "climax", Premise: "the witch's illusions test your resolve"},
-		{Index: 12, Role: "climax", Premise: "the heart of the forest reveals itself"},
-		{Index: 13, Role: "resolution", Premise: "the forest's curse lifts"},
-		{Index: 14, Role: "resolution", Premise: "dawn breaks over the clearing"},
+func demoGameplay() engine.Gameplay {
+	return engine.Gameplay{
+		ID:    "demo15",
+		Title: "The Sleepless Forest",
+		Chapters: []engine.ChapterTemplate{
+			{
+				Index: 0,
+				Title: "Into the Forest",
+				Clauses: []engine.ClauseTemplate{
+					{ChapterIndex: 0, Order: 0, Type: engine.ClauseSetup, Description: "the edge of the Sleepless Forest looms ahead"},
+					{ChapterIndex: 0, Order: 1, Type: engine.ClauseSetup, Description: "a narrow path winds through dense undergrowth"},
+					{ChapterIndex: 0, Order: 2, Type: engine.ClauseSetup, Description: "strange tracks mark the forest floor"},
+					{ChapterIndex: 0, Order: 3, Type: engine.ClauseConflict, Description: "a clearing holds the ruins of an old shrine"},
+					{ChapterIndex: 0, Order: 4, Type: engine.ClauseConflict, Description: "a pack of shadow wolves circles the clearing"},
+				},
+			},
+			{
+				Index: 1,
+				Title: "The Inner Grove",
+				Clauses: []engine.ClauseTemplate{
+					{ChapterIndex: 1, Order: 0, Type: engine.ClauseConflict, Description: "a moss-covered archway blocks the trail"},
+					{ChapterIndex: 1, Order: 1, Type: engine.ClauseConflict, Description: "a locked gate guards the inner grove"},
+					{ChapterIndex: 1, Order: 2, Type: engine.ClauseSetup, Description: "a hermit in the grove offers cryptic advice"},
+					{ChapterIndex: 1, Order: 3, Type: engine.ClauseSetup, Description: "the path collapses into a sinkhole"},
+					{ChapterIndex: 1, Order: 4, Type: engine.ClauseSetup, Description: "a hidden spring restores vitality"},
+				},
+			},
+			{
+				Index:   2,
+				Title:   "The Witch's Heart",
+				IsFinal: true,
+				Clauses: []engine.ClauseTemplate{
+					{ChapterIndex: 2, Order: 0, Type: engine.ClauseSetup, Description: "a bridge of roots spans a ravine"},
+					{ChapterIndex: 2, Order: 1, Type: engine.ClauseConflict, Description: "the witch's illusions test your resolve"},
+					{ChapterIndex: 2, Order: 2, Type: engine.ClauseConflict, Description: "the heart of the forest reveals itself"},
+					{ChapterIndex: 2, Order: 3, Type: engine.ClauseResolution, Description: "the forest's curse lifts"},
+					{ChapterIndex: 2, Order: 4, Type: engine.ClauseResolution, Description: "dawn breaks over the clearing"},
+				},
+			},
+		},
 	}
 }
 
-func demoBeatOverrides() map[int]engine.BeatType {
-	return map[int]engine.BeatType{
-		0:  engine.BeatDiscovery,
-		1:  engine.BeatDiscovery,
-		2:  engine.BeatDiscovery,
-		3:  engine.BeatPuzzle,
-		4:  engine.BeatCombat,
-		5:  engine.BeatPuzzle,
-		6:  engine.BeatPuzzle,
-		7:  engine.BeatSocial,
-		8:  engine.BeatSetback,
-		9:  engine.BeatDiscovery,
-		10: engine.BeatDiscovery,
-		11: engine.BeatCombat,
-		12: engine.BeatDiscovery,
-		13: engine.BeatDiscovery,
-		14: engine.BeatDiscovery,
-	}
-}
-
-func demoBeatPool() []engine.BeatType {
-	return []engine.BeatType{
-		engine.BeatDiscovery,
-		engine.BeatPuzzle,
-		engine.BeatCombat,
-		engine.BeatSocial,
-		engine.BeatSetback,
-	}
-}
-
-func demoCheck(_ engine.ParsedAction, c engine.Character, _ engine.BeatType, _ engine.SceneState) engine.CheckSpec {
+func demoCheck(_ engine.ParsedAction, c engine.Character, _ engine.ClauseType, _ engine.SceneState) engine.CheckSpec {
 	return engine.CheckSpec{DC: 10, StatModifier: c.Stats.Dexterity}
 }
 
-func demoEffect(a engine.ParsedAction, c engine.Character, _ engine.BeatType, outcome engine.Outcome) []engine.StateDelta {
+func demoEffect(a engine.ParsedAction, c engine.Character, _ engine.ClauseType, outcome engine.Outcome) []engine.StateDelta {
 	if outcome == engine.OutcomeFail {
 		return nil
 	}
 
-	clauseIdx := -1
+	var chapterIdx, clauseOrder int
 	for _, cond := range c.Status.Conditions {
-		if len(cond) > 10 && cond[:10] == "clause_idx:" {
-			var n int
-			_, _ = fmt.Sscanf(cond, "clause_idx:%d", &n)
-			clauseIdx = n
-			break
+		if strings.HasPrefix(cond, "clause_idx:") {
+			parts := strings.Split(cond[len("clause_idx:"):], ":")
+			if len(parts) == 2 {
+				fmt.Sscanf(parts[0], "%d", &chapterIdx)
+				fmt.Sscanf(parts[1], "%d", &clauseOrder)
+				break
+			}
 		}
 	}
 
 	var item engine.Item
-	switch clauseIdx {
-	case 6:
+	switch {
+	case chapterIdx == 1 && clauseOrder == 1:
 		item = engine.Item{ID: "forest-key-" + a.CharacterID, Name: "forest key", Type: "key"}
-	case 11:
+	case chapterIdx == 2 && clauseOrder == 1:
 		item = engine.Item{ID: "witch-robe-" + a.CharacterID, Name: "witch robe", Type: "armor"}
 	default:
 		item = engine.Item{ID: "trinket-" + a.CharacterID, Name: "trinket", Type: "curio"}

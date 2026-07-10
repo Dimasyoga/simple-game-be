@@ -4,6 +4,9 @@ import "testing"
 
 func TestCommitFoldsDeltasLosslesslyAndAdvancesClause(t *testing.T) {
 	run := &Run{
+		Gameplay: Gameplay{Chapters: []ChapterTemplate{
+			{Clauses: []ClauseTemplate{{}, {}}}, // 2 clauses so this commit doesn't end the chapter
+		}},
 		Characters: []Character{
 			{ID: "pc1", Stats: Stats{HP: 10}},
 		},
@@ -22,8 +25,8 @@ func TestCommitFoldsDeltasLosslesslyAndAdvancesClause(t *testing.T) {
 
 	Commit(run, resolved)
 
-	if run.CurrentClauseIndex != 1 {
-		t.Fatalf("expected clause index to advance to 1, got %d", run.CurrentClauseIndex)
+	if run.ClauseOrder != 1 {
+		t.Fatalf("expected clause order to advance to 1, got %d", run.ClauseOrder)
 	}
 	if run.Characters[0].Stats.HP != 7 {
 		t.Fatalf("expected hp 7 after -3 delta, got %d", run.Characters[0].Stats.HP)
