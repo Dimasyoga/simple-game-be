@@ -14,15 +14,23 @@ import (
 // remembers, since the narrator here is the stub and never sees dice/DCs.
 func TestClimaxBranchesOnAccumulatedTierOneState(t *testing.T) {
 	ctx := context.Background()
-	skeleton := []SkeletonBeat{
-		{Index: 0, Role: "setup", Premise: "a goblin blocks the path"},
-		{Index: 1, Role: "rising", Premise: "a fire cloak glints in the goblin's lair"},
-		{Index: 2, Role: "climax", Premise: "the dragon descends", Climax: true},
+	gameplay := Gameplay{
+		ID: "dragon",
+		Chapters: []ChapterTemplate{
+			{Index: 0, Title: "The Goblin", Clauses: []ClauseTemplate{
+				{ChapterIndex: 0, Order: 0, Type: ClauseConflict, Description: "a goblin blocks the path"},
+			}},
+			{Index: 1, Title: "The Lair", Clauses: []ClauseTemplate{
+				{ChapterIndex: 1, Order: 0, Type: ClauseConflict, Description: "a fire cloak glints in the goblin's lair"},
+			}},
+			{Index: 2, Title: "The Dragon", IsFinal: true, Clauses: []ClauseTemplate{
+				{ChapterIndex: 2, Order: 0, Type: ClauseConflict, Description: "the dragon descends"},
+			}},
+		},
 	}
-	overrides := map[int]BeatType{0: BeatCombat, 1: BeatDiscovery, 2: BeatCombat}
 	catalog := NewItemCatalog(Item{ID: "fire_cloak1", Name: "fire cloak"})
 
-	checkFn := func(a ParsedAction, c Character, bt BeatType, scene SceneState) CheckSpec {
+	checkFn := func(a ParsedAction, c Character, bt ClauseType, scene SceneState) CheckSpec {
 		switch a.Intent {
 		case "attack goblin", "grab fire cloak":
 			return CheckSpec{DC: 5, StatModifier: c.Stats.Dexterity}
@@ -38,7 +46,7 @@ func TestClimaxBranchesOnAccumulatedTierOneState(t *testing.T) {
 		}
 		return CheckSpec{DC: 10, StatModifier: c.Stats.Dexterity}
 	}
-	effectFn := func(a ParsedAction, c Character, bt BeatType, outcome Outcome) []StateDelta {
+	effectFn := func(a ParsedAction, c Character, bt ClauseType, outcome Outcome) []StateDelta {
 		if outcome == OutcomeFail {
 			return nil
 		}
@@ -60,7 +68,10 @@ func TestClimaxBranchesOnAccumulatedTierOneState(t *testing.T) {
 	}
 
 	t.Run("prepared hero slays the dragon", func(t *testing.T) {
-		run := NewRun("run1", skeleton, []Character{newHero()}, NewSeededRNG(1), []BeatType{BeatCombat}, overrides)
+		run := NewRun("run1", "dragon", "single", gameplay, []Character{newHero()})
+		if err := StartRun(run); err != nil {
+			t.Fatalf("StartRun failed: %v", err)
+		}
 		rng := constRNG{val: 15}
 		n := narrator.NewStub()
 
@@ -81,8 +92,11 @@ func TestClimaxBranchesOnAccumulatedTierOneState(t *testing.T) {
 		if run.Status != "ended" {
 			t.Fatalf("expected run to end after the climax, got status %q", run.Status)
 		}
-		if run.CurrentClauseIndex != 3 {
-			t.Fatalf("expected clause index 3 after 3 clauses, got %d", run.CurrentClauseIndex)
+		if run.ChapterIndex != 2 {
+			t.Fatalf("expected the final chapter (index 2) after 3 chapters, got %d", run.ChapterIndex)
+		}
+		if len(run.ChapterSummaries) != 3 {
+			t.Fatalf("expected one chapter summary per completed chapter (3), got %d", len(run.ChapterSummaries))
 		}
 		found := false
 		for _, id := range run.WorldState.KillList {
@@ -99,7 +113,10 @@ func TestClimaxBranchesOnAccumulatedTierOneState(t *testing.T) {
 	})
 
 	t.Run("unprepared hero fails the dragon", func(t *testing.T) {
-		run := NewRun("run2", skeleton, []Character{newHero()}, NewSeededRNG(1), []BeatType{BeatCombat}, overrides)
+		run := NewRun("run2", "dragon", "single", gameplay, []Character{newHero()})
+		if err := StartRun(run); err != nil {
+			t.Fatalf("StartRun failed: %v", err)
+		}
 		rng := constRNG{val: 15}
 		n := narrator.NewStub()
 
@@ -117,6 +134,70 @@ func TestClimaxBranchesOnAccumulatedTierOneState(t *testing.T) {
 			t.Fatal("expected an unprepared hero to fail the unbuffed dragon fight")
 		}
 	})
+}
+
+// TestNoInputClauseAppliesScriptedDeltasWithoutARoll is the design.md/
+// schema.md guardrail for a requires_input=false clause (setup, by v1's
+// BehaviorFor default): it must apply its authored ScriptedDeltas
+// unconditionally, produce a PROCEEDS outcome with no dice, and still let a
+// scripted item drop flow through LOOT — all with no ActionInput supplied at
+// all, since there's no window to collect one from.
+func TestNoInputClauseAppliesScriptedDeltasWithoutARoll(t *testing.T) {
+	ctx := context.Background()
+	gameplay := Gameplay{
+		ID: "starting-gift",
+		Chapters: []ChapterTemplate{
+			{Index: 0, Title: "The Gift", IsFinal: true, Clauses: []ClauseTemplate{
+				{
+					ChapterIndex: 0, Order: 0, Type: ClauseSetup,
+					Description: "the party is handed a satchel before setting out",
+					ScriptedDeltas: []StateDelta{
+						DropItemDelta(Item{ID: "satchel1", Name: "satchel", Type: "gear"}),
+					},
+				},
+			}},
+		},
+	}
+
+	run := NewRun("run1", "starting-gift", "single", gameplay, []Character{
+		{ID: "hero", Stats: Stats{Dexterity: 5, HP: 10, MaxHP: 10}, Status: CharacterStatus{Alive: true}},
+	})
+	if err := StartRun(run); err != nil {
+		t.Fatalf("StartRun failed: %v", err)
+	}
+
+	rng := constRNG{val: 20} // if RESOLVE ever rolled, this would trivially succeed — it must not roll at all
+	checkFn := func(ParsedAction, Character, ClauseType, SceneState) CheckSpec {
+		t.Fatal("checkFn must never be called for a requires_roll=false clause")
+		return CheckSpec{}
+	}
+	effectFn := func(ParsedAction, Character, ClauseType, Outcome) []StateDelta {
+		t.Fatal("effectFn must never be called for a requires_input=false clause (no ActionInput exists to drive it)")
+		return nil
+	}
+
+	result := mustRunClause(t, ctx, narrator.NewStub(), rng, run, NewItemCatalog(), checkFn, effectFn, ClauseInput{
+		LootClaimants: map[string][]string{"satchel1": {"hero"}},
+	})
+
+	if run.Status != "ended" {
+		t.Fatalf("expected the run to end after its only (final) chapter, got status %q", run.Status)
+	}
+	if len(run.ChapterSummaries) != 1 {
+		t.Fatalf("expected exactly one chapter summary, got %d", len(run.ChapterSummaries))
+	}
+	if len(result.LootClaims) != 1 || result.LootClaims[0].ResolvedTo != "hero" {
+		t.Fatalf("expected the scripted item drop to be claimed by hero, got %+v", result.LootClaims)
+	}
+	found := false
+	for _, it := range run.Characters[0].Inventory {
+		if it.ID == "satchel1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected the scripted satchel to land in hero's inventory with no roll and no player input")
+	}
 }
 
 func mustRunClause(

@@ -28,11 +28,24 @@ func TestFullStoryCompletesOverRealContractDeadlockFree(t *testing.T) {
 	defer httpServer.Close()
 
 	var created CreateRunResponse
-	decodeJSON(t, postJSON(t, httpServer.URL+"/runs", CreateRunRequest{Mode: "multi", Scenario: "demo"}), &created)
+	decodeJSON(t, postJSON(t, httpServer.URL+"/runs", CreateRunRequest{Mode: "multi", GameplayID: "demo"}), &created)
 
 	var char1, char2 JoinResponse
 	decodeJSON(t, postJSON(t, httpServer.URL+"/runs/"+created.RunID+"/join", JoinRequest{CharacterClass: "warrior", Name: "Aria"}), &char1)
 	decodeJSON(t, postJSON(t, httpServer.URL+"/runs/"+created.RunID+"/join", JoinRequest{CharacterClass: "archer", Name: "Bram"}), &char2)
+
+	if !char1.IsHost {
+		t.Fatal("expected the first character to join to be host")
+	}
+	if char2.IsHost {
+		t.Fatal("expected the second character to join not to be host")
+	}
+
+	var started StartResponse
+	decodeJSON(t, postJSON(t, httpServer.URL+"/runs/"+created.RunID+"/start", StartRequest{CharacterID: char1.CharacterID}), &started)
+	if !started.Started {
+		t.Fatalf("expected the host's start to succeed, got %+v", started)
+	}
 
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/runs/" + created.RunID + "/ws?characterId=" + char1.CharacterID
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -75,13 +88,13 @@ drain:
 				remarshal(t, msg.Data, &data)
 
 				var ar ActionResponse
-				decodeJSON(t, postJSON(t, fmt.Sprintf("%s/runs/%s/clauses/%d/action", httpServer.URL, created.RunID, data.ClauseIndex),
+				decodeJSON(t, postJSON(t, fmt.Sprintf("%s/runs/%s/chapters/%d/clauses/%d/action", httpServer.URL, created.RunID, data.ChapterIndex, data.ClauseOrder),
 					ActionRequest{CharacterID: char1.CharacterID, RawText: "pick the lock"}), &ar)
 				if !ar.Accepted {
 					t.Fatalf("expected action to be accepted, got %+v", ar)
 				}
 
-				passResp := postJSON(t, fmt.Sprintf("%s/runs/%s/clauses/%d/pass", httpServer.URL, created.RunID, data.ClauseIndex),
+				passResp := postJSON(t, fmt.Sprintf("%s/runs/%s/chapters/%d/clauses/%d/pass", httpServer.URL, created.RunID, data.ChapterIndex, data.ClauseOrder),
 					PassRequest{CharacterID: char2.CharacterID})
 				if passResp.StatusCode != http.StatusOK {
 					t.Fatalf("expected pass to be accepted, got %d", passResp.StatusCode)

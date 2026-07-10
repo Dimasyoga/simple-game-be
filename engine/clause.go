@@ -12,7 +12,8 @@ import (
 // ClauseInput is what a caller must have already collected before driving a
 // clause: WINDOW's barrier (server clock, real concurrency, per-player
 // timeouts) is a room/ concern (Phase 3). Here, Inputs is assumed final —
-// every acting character already has a terminal ActionInput.
+// every acting character already has a terminal ActionInput. Ignored
+// entirely for a requires_input=false clause.
 type ClauseInput struct {
 	Inputs        map[string]ActionInput
 	LootClaimants map[string][]string // itemId -> claimant characterIds
@@ -45,21 +46,55 @@ func (c *ClauseInProgress) DroppedItems() []Item {
 	return append([]Item(nil), c.clause.DroppedItems...)
 }
 
+// RequiresInput reports whether this clause needs a WINDOW barrier at all —
+// a room/ transport layer must skip opening one when false (rules.md R2.3).
+func (c *ClauseInProgress) RequiresInput() bool {
+	return BehaviorFor(c.clause.Type).RequiresInput
+}
+
+func currentChapter(run *Run) (ChapterTemplate, error) {
+	if run.ChapterIndex >= len(run.Gameplay.Chapters) {
+		return ChapterTemplate{}, fmt.Errorf("engine: chapter index %d beyond gameplay length %d", run.ChapterIndex, len(run.Gameplay.Chapters))
+	}
+	return run.Gameplay.Chapters[run.ChapterIndex], nil
+}
+
+// RequiresInputForCurrent reports whether the run's current clause needs a
+// WINDOW barrier at all (rules.md R2.3) — a room/ transport layer checks
+// this before deciding whether to open one.
+func RequiresInputForCurrent(run *Run) (bool, error) {
+	tmpl, err := currentClauseTemplate(run)
+	if err != nil {
+		return false, err
+	}
+	return BehaviorFor(tmpl.Type).RequiresInput, nil
+}
+
+func currentClauseTemplate(run *Run) (ClauseTemplate, error) {
+	chapter, err := currentChapter(run)
+	if err != nil {
+		return ClauseTemplate{}, err
+	}
+	if run.ClauseOrder >= len(chapter.Clauses) {
+		return ClauseTemplate{}, fmt.Errorf("engine: clause order %d beyond chapter %d length %d", run.ClauseOrder, run.ChapterIndex, len(chapter.Clauses))
+	}
+	return chapter.Clauses[run.ClauseOrder], nil
+}
+
 // PresentClause runs PRESENT (R2) alone, before any input is collected.
 // Splitting it out of BeginClause matters for Room (Phase 3): the contract
 // shows players the scene, *then* opens the input window — the narrator
 // call can't be deferred until after WINDOW the way BeginClause used to.
 func PresentClause(ctx context.Context, n narrator.Narrator, run *Run) (string, error) {
-	if run.CurrentClauseIndex >= len(run.Skeleton) {
-		return "", fmt.Errorf("engine: clause index %d beyond skeleton length %d", run.CurrentClauseIndex, len(run.Skeleton))
+	tmpl, err := currentClauseTemplate(run)
+	if err != nil {
+		return "", err
 	}
-	beat := run.Skeleton[run.CurrentClauseIndex]
-	beatType := run.BeatDeck[run.CurrentClauseIndex]
 	scenePlain, err := n.Present(ctx, narrator.PresentContext{
-		ProseSummary:  run.ProseSummary,
+		ProseSummary:  buildMemoryContext(run),
 		RelevantState: worldStateAsMap(run.WorldState),
-		BeatPremise:   beat.Premise,
-		BeatType:      string(beatType),
+		BeatPremise:   tmpl.Description,
+		BeatType:      string(tmpl.Type),
 	})
 	if err != nil {
 		return "", fmt.Errorf("engine: PRESENT: %w", err)
@@ -68,9 +103,12 @@ func PresentClause(ctx context.Context, n narrator.Narrator, run *Run) (string, 
 }
 
 // BeginClause runs WINDOW -> GATE -> INITIATIVE -> RESOLVE (R3-R6) and stops
-// before LOOT. scenePlain comes from a prior PresentClause call. inputs must
-// already carry a terminal ActionInput per acting character — collecting
-// them (the WINDOW barrier) is a room/ concern (R3).
+// before LOOT, unless the clause template's type says requires_input=false
+// (R2.3), in which case it applies the template's ScriptedDeltas
+// unconditionally and skips straight to the dropped-items extraction LOOT
+// needs. scenePlain comes from a prior PresentClause call. When input is
+// required, inputs must already carry a terminal ActionInput per acting
+// character — collecting them (the WINDOW barrier) is a room/ concern (R3).
 func BeginClause(
 	ctx context.Context,
 	rng RNG,
@@ -81,12 +119,30 @@ func BeginClause(
 	scenePlain string,
 	inputs map[string]ActionInput,
 ) (*ClauseInProgress, error) {
-	if run.CurrentClauseIndex >= len(run.Skeleton) {
-		return nil, fmt.Errorf("engine: clause index %d beyond skeleton length %d", run.CurrentClauseIndex, len(run.Skeleton))
+	tmpl, err := currentClauseTemplate(run)
+	if err != nil {
+		return nil, err
 	}
+	clause := Clause{ChapterIndex: run.ChapterIndex, Order: run.ClauseOrder, Type: tmpl.Type}
+	characters := charactersByID(run)
 
-	beatType := run.BeatDeck[run.CurrentClauseIndex]
-	clause := Clause{Index: run.CurrentClauseIndex, BeatType: beatType}
+	if !BehaviorFor(tmpl.Type).RequiresInput {
+		// R2.3: no player action to roll or apply deltas from — apply the
+		// authored scriptedDeltas unconditionally as one PROCEEDS action.
+		clause.Phase = PhaseResolve
+		clause.SceneState = SceneState{}
+		seedSceneFromWorld(&clause.SceneState, run.WorldState)
+		if len(tmpl.ScriptedDeltas) > 0 {
+			applyToScene(&clause.SceneState, tmpl.ScriptedDeltas)
+			clause.ResolvedActions = []ResolvedAction{{
+				Intent:  "scripted",
+				Outcome: OutcomeProceeds,
+				Deltas:  tmpl.ScriptedDeltas,
+			}}
+		}
+		clause.DroppedItems = extractDroppedItems(clause.ResolvedActions)
+		return &ClauseInProgress{clause: clause, scenePlain: scenePlain, characters: characters}, nil
+	}
 
 	// WINDOW (R3) — barrier itself is Phase 3; inputs arrive pre-collected.
 	clause.Phase = PhaseWindow
@@ -94,7 +150,6 @@ func BeginClause(
 
 	// GATE (R4)
 	clause.Phase = PhaseGate
-	characters := charactersByID(run)
 	parsed := Gate(clause.Inputs, characters, catalog)
 
 	// INITIATIVE (R5)
@@ -112,13 +167,13 @@ func BeginClause(
 	clause.Phase = PhaseResolve
 	clause.SceneState = SceneState{}
 	seedSceneFromWorld(&clause.SceneState, run.WorldState)
-	clause.ResolvedActions = Resolve(rng, clause.InitiativeOrder, parsed, characters, beatType, &clause.SceneState, checkFn, effectFn)
+	clause.ResolvedActions = Resolve(rng, clause.InitiativeOrder, parsed, characters, tmpl.Type, &clause.SceneState, checkFn, effectFn)
 	clause.DroppedItems = extractDroppedItems(clause.ResolvedActions)
 
 	return &ClauseInProgress{clause: clause, scenePlain: scenePlain, characters: characters}, nil
 }
 
-// FinishClause runs LOOT -> NARRATE -> COMMIT (R7-R9) against a clause
+// FinishClause runs LOOT -> NARRATE -> COMMIT (R7-R9, R9b) against a clause
 // BeginClause paused. lootClaimants maps itemId -> claimant characterIds,
 // however they were collected (pre-supplied by RunClause, or gathered
 // interactively by a room.LootWindow per item).
@@ -151,7 +206,7 @@ func FinishClause(
 	// NARRATE (R8)
 	clause.Phase = PhaseNarrate
 	narrationPlain, err := n.Narrate(ctx, narrator.NarrateContext{
-		ProseSummary:    run.ProseSummary,
+		ProseSummary:    buildMemoryContext(run),
 		RelevantState:   worldStateAsMap(run.WorldState),
 		ResolvedActions: summarizeResolved(clause.ResolvedActions),
 	})
@@ -159,13 +214,9 @@ func FinishClause(
 		return ClauseResult{}, fmt.Errorf("engine: NARRATE: %w", err)
 	}
 
-	// COMMIT (R9)
+	// COMMIT (R9, R9b)
 	clause.Phase = PhaseCommit
 	Commit(run, clause.ResolvedActions)
-	run.ProseSummary = compactProse(run.ProseSummary, narrationPlain)
-	if run.CurrentClauseIndex >= len(run.Skeleton) {
-		run.Status = "ended"
-	}
 
 	return ClauseResult{
 		Clause:         clause,
@@ -286,19 +337,34 @@ func summarizeDeltas(deltas []StateDelta) string {
 	return strings.Join(parts, ", ")
 }
 
-// proseSummaryCap bounds tier-2 memory. Lossy compaction is fine by design
-// (spec.md §5) — tier-1 (WorldState/Character, folded in Commit) is the
-// lossless record; this is only ever a rolling narrative aid for PRESENT.
-const proseSummaryCap = 4000
+// buildMemoryContext implements spec.md §5's bounded narrator context:
+// (prior chapter summaries) + (current chapter's live clauses so far). It
+// does not grow with raw prose regardless of run length — chapterSummaries
+// are engine-written once per completed chapter (R9b); ChapterLog is reset
+// each time a chapter ends (Commit).
+func buildMemoryContext(run *Run) string {
+	var parts []string
+	if len(run.ChapterSummaries) > 0 {
+		parts = append(parts, strings.Join(run.ChapterSummaries, "\n"))
+	}
+	if len(run.ChapterLog) > 0 {
+		parts = append(parts, "This chapter so far: "+summarizeChapterLog(run.ChapterLog))
+	}
+	return strings.Join(parts, "\n\n")
+}
 
-func compactProse(existing, addition string) string {
-	combined := existing
-	if combined != "" && addition != "" {
-		combined += " "
+func summarizeChapterLog(log []ResolvedAction) string {
+	parts := make([]string, 0, len(log))
+	for _, ra := range log {
+		parts = append(parts, chapterLogLine(ra))
 	}
-	combined += addition
-	if len(combined) <= proseSummaryCap {
-		return combined
+	return strings.Join(parts, "; ")
+}
+
+func chapterLogLine(ra ResolvedAction) string {
+	who := ra.CharacterID
+	if who == "" {
+		who = "the party"
 	}
-	return combined[len(combined)-proseSummaryCap:]
+	return fmt.Sprintf("%s: %s -> %s", who, ra.Intent, ra.Outcome)
 }

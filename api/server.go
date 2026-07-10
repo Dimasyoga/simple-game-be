@@ -52,9 +52,10 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /runs", s.handleCreateRun)
 	mux.HandleFunc("POST /runs/{runId}/join", s.handleJoin)
+	mux.HandleFunc("POST /runs/{runId}/start", s.handleStart)
 	mux.HandleFunc("GET /runs/{runId}/state", s.handleState)
-	mux.HandleFunc("POST /runs/{runId}/clauses/{clauseIndex}/action", s.handleAction)
-	mux.HandleFunc("POST /runs/{runId}/clauses/{clauseIndex}/pass", s.handlePass)
+	mux.HandleFunc("POST /runs/{runId}/chapters/{chapterIndex}/clauses/{clauseOrder}/action", s.handleAction)
+	mux.HandleFunc("POST /runs/{runId}/chapters/{chapterIndex}/clauses/{clauseOrder}/pass", s.handlePass)
 	mux.HandleFunc("POST /runs/{runId}/loot/{itemId}/claim", s.handleLootClaim)
 	mux.HandleFunc("GET /runs/{runId}/ws", s.handleWS)
 	return mux
@@ -95,15 +96,25 @@ func (mr *managedRun) characterName(id string) string {
 // hooks wires room.Hooks to push contract.md's WS events over this run's hub.
 func (mr *managedRun) hooks() *room.Hooks {
 	return &room.Hooks{
-		OnScenePresented: func(scenePlain string) {
-			idx := mr.room.Snapshot().ClauseIndex
-			mr.appendStoryLog(StoryLogEntry{ClauseIndex: idx, Kind: "scene", TextPlain: scenePlain})
-			mr.hub.broadcast("clause_presented", ClausePresentedEvent{ClauseIndex: idx, ScenePlain: scenePlain})
+		OnChapterStarted: func(chapterIndex int, title string) {
+			mr.hub.broadcast("chapter_started", ChapterStartedEvent{ChapterIndex: chapterIndex, Title: title})
+		},
+		OnScenePresented: func(scenePlain string, requiresInput bool) {
+			snap := mr.room.Snapshot()
+			mr.appendStoryLog(StoryLogEntry{ChapterIndex: snap.ChapterIndex, ClauseOrder: snap.ClauseOrder, Kind: "scene", TextPlain: scenePlain})
+			mr.hub.broadcast("clause_presented", ClausePresentedEvent{
+				ChapterIndex:  snap.ChapterIndex,
+				ClauseOrder:   snap.ClauseOrder,
+				ScenePlain:    scenePlain,
+				RequiresInput: requiresInput,
+			})
 		},
 		OnWindowOpened: func(deadline time.Time) {
+			snap := mr.room.Snapshot()
 			mr.hub.broadcast("window_opened", WindowOpenedEvent{
-				ClauseIndex: mr.room.Snapshot().ClauseIndex,
-				Deadline:    formatDeadline(deadline),
+				ChapterIndex: snap.ChapterIndex,
+				ClauseOrder:  snap.ClauseOrder,
+				Deadline:     formatDeadline(deadline),
 			})
 		},
 		OnInputStatus: func(actingIDs []string, status map[string]engine.InputTerminal) {
@@ -120,7 +131,8 @@ func (mr *managedRun) hooks() *room.Hooks {
 			mr.hub.broadcast("input_status", InputStatusEvent{Submitted: submitted, Total: len(actingIDs), Per: per})
 		},
 		OnResolving: func() {
-			mr.hub.broadcast("resolving", ResolvingEvent{ClauseIndex: mr.room.Snapshot().ClauseIndex})
+			snap := mr.room.Snapshot()
+			mr.hub.broadcast("resolving", ResolvingEvent{ChapterIndex: snap.ChapterIndex, ClauseOrder: snap.ClauseOrder})
 		},
 		OnLootWindow: func(items []engine.Item, deadline time.Time) {
 			views := make([]ItemView, 0, len(items))
@@ -138,6 +150,8 @@ func (mr *managedRun) hooks() *room.Hooks {
 func (mr *managedRun) currentPhase() string {
 	snap := mr.room.Snapshot()
 	switch {
+	case snap.Status == "lobby":
+		return "LOBBY"
 	case snap.Status == "ended":
 		return "ENDED"
 	case mr.room.Barrier() != nil:
@@ -152,10 +166,11 @@ func (mr *managedRun) currentPhase() string {
 func (mr *managedRun) playerView(selfID string) PlayerView {
 	snap := mr.room.Snapshot()
 	view := PlayerView{
-		RunID:       mr.id,
-		ClauseIndex: snap.ClauseIndex,
-		Phase:       mr.currentPhase(),
-		StoryLog:    mr.storyLogSnapshot(),
+		RunID:        mr.id,
+		ChapterIndex: snap.ChapterIndex,
+		ClauseOrder:  snap.ClauseOrder,
+		Phase:        mr.currentPhase(),
+		StoryLog:     mr.storyLogSnapshot(),
 	}
 	for _, c := range snap.Characters {
 		if c.ID == selfID {
@@ -209,8 +224,13 @@ func (s *Server) getRun(runID string) *managedRun {
 func (s *Server) driveRun(mr *managedRun) {
 	ctx := context.Background()
 	for {
-		if mr.room.Snapshot().Status == "ended" {
-			mr.hub.broadcast("run_ended", RunEndedEvent{Outcome: "completed", SummaryPlain: mr.room.Snapshot().ProseSummary})
+		snap := mr.room.Snapshot()
+		if snap.Status == "ended" {
+			summary := ""
+			if n := len(snap.ChapterSummaries); n > 0 {
+				summary = snap.ChapterSummaries[n-1]
+			}
+			mr.hub.broadcast("run_ended", RunEndedEvent{Outcome: "completed", SummaryPlain: summary})
 			return
 		}
 
@@ -220,11 +240,17 @@ func (s *Server) driveRun(mr *managedRun) {
 			return
 		}
 
-		mr.appendStoryLog(StoryLogEntry{ClauseIndex: result.Clause.Index, Kind: "narration", TextPlain: result.NarrationPlain})
+		mr.appendStoryLog(StoryLogEntry{ChapterIndex: result.Clause.ChapterIndex, ClauseOrder: result.Clause.Order, Kind: "narration", TextPlain: result.NarrationPlain})
+		latestSnap := mr.room.Snapshot()
+		stateSummary := ""
+		if n := len(latestSnap.ChapterSummaries); n > 0 {
+			stateSummary = latestSnap.ChapterSummaries[n-1]
+		}
 		mr.hub.broadcast("clause_narrated", ClauseNarratedEvent{
-			ClauseIndex:    result.Clause.Index,
+			ChapterIndex:   result.Clause.ChapterIndex,
+			ClauseOrder:    result.Clause.Order,
 			NarrationPlain: result.NarrationPlain,
-			StateSummary:   mr.room.Snapshot().ProseSummary,
+			StateSummary:   stateSummary,
 		})
 		mr.hub.broadcast("state_updated", StateUpdatedEvent{View: mr.playerView("")})
 	}
@@ -249,7 +275,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	rng := s.NewRNG()
-	run := engine.NewRun(runID, demoSkeleton(), nil, rng, demoBeatPool(), demoBeatOverrides())
+	run := engine.NewRun(runID, req.GameplayID, req.Mode, demoGameplay(), nil)
 	rm := room.NewRoom(run, room.RealClock(), s.WindowDuration, s.LootWindowDuration)
 
 	mr := &managedRun{id: runID, room: rm, hub: newHub(), catalog: engine.NewItemCatalog(), rng: rng}
@@ -288,6 +314,42 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		Status: engine.CharacterStatus{Alive: true},
 	})
 
+	isHost := mr.room.SetHostIfUnset(characterID)
+
+	writeJSON(w, http.StatusOK, JoinResponse{CharacterID: characterID, IsHost: isHost})
+}
+
+func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
+	mr := s.getRun(r.PathValue("runId"))
+	if mr == nil {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+
+	var req StartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	snap := mr.room.Snapshot()
+	switch {
+	case snap.Status != "lobby":
+		writeJSON(w, http.StatusConflict, StartResponse{Started: false, Reason: "already active"})
+		return
+	case len(snap.Characters) == 0:
+		writeJSON(w, http.StatusConflict, StartResponse{Started: false, Reason: "no players"})
+		return
+	case req.CharacterID != snap.HostCharacterID:
+		writeJSON(w, http.StatusConflict, StartResponse{Started: false, Reason: "not host"})
+		return
+	}
+
+	if err := mr.room.Start(); err != nil {
+		writeJSON(w, http.StatusConflict, StartResponse{Started: false, Reason: err.Error()})
+		return
+	}
+
 	mr.mu.Lock()
 	alreadyStarted := mr.started
 	mr.started = true
@@ -296,7 +358,7 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		go s.driveRun(mr)
 	}
 
-	writeJSON(w, http.StatusOK, JoinResponse{CharacterID: characterID})
+	writeJSON(w, http.StatusOK, StartResponse{Started: true})
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -314,9 +376,9 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "run not found", http.StatusNotFound)
 		return
 	}
-	clauseIndex, err := strconv.Atoi(r.PathValue("clauseIndex"))
+	chapterIndex, clauseOrder, err := pathChapterClause(r)
 	if err != nil {
-		http.Error(w, "invalid clauseIndex", http.StatusBadRequest)
+		http.Error(w, "invalid chapterIndex/clauseOrder", http.StatusBadRequest)
 		return
 	}
 	var req ActionRequest
@@ -325,7 +387,8 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if clauseIndex != mr.room.Snapshot().ClauseIndex {
+	snap := mr.room.Snapshot()
+	if chapterIndex != snap.ChapterIndex || clauseOrder != snap.ClauseOrder {
 		writeJSON(w, http.StatusConflict, ActionResponse{Accepted: false, Reason: "wrong phase"})
 		return
 	}
@@ -342,9 +405,9 @@ func (s *Server) handlePass(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "run not found", http.StatusNotFound)
 		return
 	}
-	clauseIndex, err := strconv.Atoi(r.PathValue("clauseIndex"))
+	chapterIndex, clauseOrder, err := pathChapterClause(r)
 	if err != nil {
-		http.Error(w, "invalid clauseIndex", http.StatusBadRequest)
+		http.Error(w, "invalid chapterIndex/clauseOrder", http.StatusBadRequest)
 		return
 	}
 	var req PassRequest
@@ -353,11 +416,27 @@ func (s *Server) handlePass(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if clauseIndex != mr.room.Snapshot().ClauseIndex || !mr.room.Pass(req.CharacterID) {
+	snap := mr.room.Snapshot()
+	if chapterIndex != snap.ChapterIndex || clauseOrder != snap.ClauseOrder || !mr.room.Pass(req.CharacterID) {
 		http.Error(w, "window closed", http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusOK, PassResponse{TerminalState: "PASSED"})
+}
+
+// pathChapterClause parses the {chapterIndex}/{clauseOrder} path params
+// shared by the action and pass routes (contract.md: a clause is addressed
+// by (chapterIndex, clauseOrder)).
+func pathChapterClause(r *http.Request) (chapterIndex, clauseOrder int, err error) {
+	chapterIndex, err = strconv.Atoi(r.PathValue("chapterIndex"))
+	if err != nil {
+		return 0, 0, err
+	}
+	clauseOrder, err = strconv.Atoi(r.PathValue("clauseOrder"))
+	if err != nil {
+		return 0, 0, err
+	}
+	return chapterIndex, clauseOrder, nil
 }
 
 func (s *Server) handleLootClaim(w http.ResponseWriter, r *http.Request) {

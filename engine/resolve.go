@@ -15,12 +15,13 @@ type CheckSpec struct {
 // CheckResolver decides the check for a legal action, given the *current*
 // working scene state — so it can see earlier actions this clause (e.g. a
 // target already alerted raises a stealth DC).
-type CheckResolver func(action ParsedAction, character Character, beatType BeatType, scene SceneState) CheckSpec
+type CheckResolver func(action ParsedAction, character Character, clauseType ClauseType, scene SceneState) CheckSpec
 
 // EffectResolver decides the StateDeltas an outcome produces. Applied to the
-// working scene state immediately after the roll, so later actions in the
-// same clause see it (R6.4).
-type EffectResolver func(action ParsedAction, character Character, beatType BeatType, outcome Outcome) []StateDelta
+// working scene state immediately after the roll (or immediately, for a
+// deterministic PROCEEDS action), so later actions in the same clause see it
+// (R6.4).
+type EffectResolver func(action ParsedAction, character Character, clauseType ClauseType, outcome Outcome) []StateDelta
 
 // Resolve implements rules.md R6: process legal actions in initiativeOrder,
 // mutating a working copy of sceneState as it goes. Illegal actions (from
@@ -28,12 +29,17 @@ type EffectResolver func(action ParsedAction, character Character, beatType Beat
 // policy choice of "no-op/improvised fallback at RESOLVE" rather than
 // blocking the whole clause. They still appear in the ordered output so the
 // narrator can render "you reach for a gun you don't have."
+//
+// Whether a legal action rolls at all is decided once per clause by
+// BehaviorFor(clauseType).RequiresRoll (R6.1): if false, the action
+// deterministically PROCEEDS with no dice — effectFn still runs to emit any
+// deltas, but roll/DC never enter the picture.
 func Resolve(
 	rng RNG,
 	initiativeOrder []string,
 	actions map[string]ParsedAction,
 	characters map[string]Character,
-	beatType BeatType,
+	clauseType ClauseType,
 	scene *SceneState,
 	checkFn CheckResolver,
 	effectFn EffectResolver,
@@ -41,6 +47,7 @@ func Resolve(
 	if scene.Facts == nil {
 		scene.Facts = map[string]any{}
 	}
+	requiresRoll := BehaviorFor(clauseType).RequiresRoll
 
 	resolved := make([]ResolvedAction, 0, len(initiativeOrder))
 	for _, id := range initiativeOrder {
@@ -59,13 +66,26 @@ func Resolve(
 		}
 
 		character := characters[id]
-		spec := checkFn(action, character, beatType, *scene)
+
+		if !requiresRoll {
+			deltas := effectFn(action, character, clauseType, OutcomeProceeds)
+			applyToScene(scene, deltas)
+			resolved = append(resolved, ResolvedAction{
+				CharacterID: id,
+				Intent:      action.Intent,
+				Outcome:     OutcomeProceeds,
+				Deltas:      deltas,
+			})
+			continue
+		}
+
+		spec := checkFn(action, character, clauseType, *scene)
 
 		raw := rng.Roll(20)
 		total := raw + spec.StatModifier + spec.PersonalityBias
 		outcome := mapOutcome(total, spec.DC)
 
-		deltas := effectFn(action, character, beatType, outcome)
+		deltas := effectFn(action, character, clauseType, outcome)
 		if spec.AgainstMorality {
 			deltas = append(deltas, StateDelta{Op: "morality", Target: id, Value: spec.PersonalityBias})
 		}
@@ -74,7 +94,7 @@ func Resolve(
 		resolved = append(resolved, ResolvedAction{
 			CharacterID: id,
 			Intent:      action.Intent,
-			Roll: DiceResult{
+			Roll: &DiceResult{
 				Die:      20,
 				Raw:      raw,
 				Modifier: spec.StatModifier,

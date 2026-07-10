@@ -14,19 +14,31 @@ decision to the narrator.
 
 ## R1. Run setup
 
-1. Load `skeleton` (fixed spine).
-2. For each skeleton slot, roll a `BeatType` into `beatDeck`. **Hide from
-   players.** Climax slot may be constrained (e.g. always "combat" for the dragon)
-   — allowed.
-3. Initialize characters, empty `WorldState`, empty `proseSummary`.
+1. Load the authored `Gameplay` template (chapters → clause templates). It is
+   **data**, invariant for the run. No random beat rolling — clause `type` and
+   `description` are authored (see `design.md`).
+2. Initialize characters, empty `WorldState`, empty `chapterSummaries[]`.
+3. Set `status = lobby`, `chapterIndex = 0`, `clauseOrder = 0`. **Do not** run any
+   clause or call the LLM until `start` (see lifecycle). `POST /runs` only reaches
+   this point.
+
+## R1b. Chapter loop
+
+Run chapters in order. For each chapter, run its clauses in order (R2–R9). When a
+chapter's final clause commits, run **R9b (chapter summary)** before advancing to
+the next chapter. After the final chapter (`isFinal`) commits, end the run (R10).
 
 ## R2. Clause: PRESENT
 
-1. Assemble narrator context: `proseSummary` + relevant `WorldState` +
-   current `SkeletonBeat.premise` + `beatType`.
+1. Assemble narrator context: `chapterSummaries[]` (prior chapters) + current
+   chapter's clauses so far + relevant `WorldState` + this clause's authored
+   `description` + `type`.
 2. `[NARRATOR]` produce scene prose. Output is display-only; it introduces no
    canonical state. If the scene implies new facts (an NPC appears), the **engine**
    records them as structured `SceneState`, not the model.
+3. Read `type → requires_input` (design.md table). If `requires_input = false`,
+   skip R3–R6 and proceed straight to NARRATE/COMMIT (an atmosphere/setup beat the
+   player doesn't act on).
 
 ## R3. Clause: WINDOW (timed input barrier)
 
@@ -70,19 +82,24 @@ Process actions **in `initiativeOrder`**, mutating a working copy of
 `sceneState` as you go so later actions see earlier effects:
 
 For each action:
-1. Determine check type + `DC` from `intent`, `beatType`, and **current**
+1. **Decide if a roll is needed.** A roll happens only when the clause
+   `type → requires_roll` allows it **and** the outcome is genuinely uncertain.
+   Deterministic actions (open an unlocked door, walk forward, take an offered
+   item) → **no roll**: `roll = null`, `outcome = PROCEEDS`, emit any deltas, done.
+   Otherwise continue:
+2. Determine check type + `DC` from `intent`, clause `type`, and **current**
    `sceneState` (which reflects earlier actions this clause — e.g. target already
    alerted raises a stealth DC or converts a "sneak" into a "failed sneak").
-2. Roll: `total = d20 + statModifier`. Apply **personality bias** as a modifier,
+3. Roll: `total = d20 + statModifier`. Apply **personality bias** as a modifier,
    not a veto: acting against morality is allowed but may lower success odds
    and always queues an alignment/reaction delta.
-3. Map to `Outcome`:
+4. Map to `Outcome`:
    - `total >= DC` → SUCCESS
    - `DC-2 <= total < DC` → PARTIAL (succeeds with cost/complication)
    - else → FAIL
-4. Emit `StateDelta[]` (hp, kill, flag, morality, add dropped item, etc.).
+5. Emit `StateDelta[]` (hp, kill, flag, morality, add dropped item, etc.).
    Apply to the working `sceneState` immediately (so ordering matters).
-5. Append to `resolvedActions` preserving order.
+6. Append to `resolvedActions` preserving order.
 
 **Conflict handling is emergent from ordering** — there is no separate "conflict
 resolver." A attacks head-on (goes first, alerts goblin) → B's sneak is
@@ -123,21 +140,40 @@ For each dropped item:
 1. Fold all `StateDelta`s into canonical `WorldState` / character sheets
    (tier-1, lossless).
 2. **Promote** any climax-relevant nuance into `WorldState.flags` explicitly.
-3. Append/compact narrative into `proseSummary` (tier-2, lossy is fine).
-4. `currentClauseIndex++`. If it was the climax, run resolution beat, then end.
+3. Advance: `clauseOrder++`. If more clauses remain in this chapter → next clause
+   (R2). If this was the chapter's last clause → **R9b**, then next chapter.
 
-## R10. Climax payoff (correctness, not flavor)
+> Within-chapter memory is the chapter's own clauses (still live in context). There
+> is no per-clause rolling prose summary anymore — compression happens per chapter
+> at R9b.
 
-The climax beat's context MUST include accumulated tier-1 state (killList,
-inventory, alignment, key flags) and its resolution MUST branch on them (the
-dead goblin cannot reappear; a collected fire-cloak changes the dragon fight).
-A climax that ignores accumulated state is a bug.
+## R9b. Chapter end: summary (memory carry-forward)
+
+Runs once, when a chapter's final clause commits.
+
+1. **Engine writes** a summary of the chapter deterministically from its clause
+   outcomes + deltas — **no LLM call.** e.g. "Ch.3 — Ambushed by bandits; Kael
+   killed two brutally; looted a steel longsword."
+2. Append to `chapterSummaries[]`.
+3. Advance: `chapterIndex++`, `clauseOrder = 0`. The next chapter's PRESENT (R2)
+   injects `chapterSummaries[]` **verbatim** (context injection, not rewrite — the
+   LLM reads it, never rewrites it; see `design.md`).
+
+## R10. Final chapter / climax payoff (correctness, not flavor)
+
+The final chapter (`isFinal`) is the climax. Its clause contexts MUST include
+accumulated tier-1 state (killList, inventory, alignment, key flags, and all prior
+`chapterSummaries`), and resolution MUST branch on them (the dead goblin cannot
+reappear; a collected fire-cloak changes the dragon fight). A climax that ignores
+accumulated state is a bug. After its final clause commits: `status = ended`, push
+`run_ended`.
 
 ---
 
 ## Determinism / testability contract
 
-- All of R3–R7 and R9 are pure engine logic and MUST be unit-testable with a
-  **stubbed narrator** (canned prose).
+- All of R3–R7, R9, and R9b are pure engine logic and MUST be unit-testable with a
+  **stubbed narrator** (canned prose). This includes the deterministic-action path
+  (R6.1: `roll = null`, `outcome = PROCEEDS`) and engine-written chapter summaries.
 - Dice use an injectable RNG so tests can force outcomes.
 - Given identical inputs + seeded RNG, resolution is fully reproducible.
