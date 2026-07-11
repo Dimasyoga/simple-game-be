@@ -20,8 +20,19 @@ func formatState(state map[string]any) string {
 	return b.String()
 }
 
+// modeDescribe and modeNarrate are the values of the leading "Mode:" line
+// every prompt and history entry carries, so the model (and anyone reading
+// the raw history) can tell which step produced a given message.
+const (
+	modeDescribe = "describe"
+	modeNarrate  = "narrate"
+)
+
 func buildPresentPrompt(pc PresentContext) (fullPrompt string, historyData string) {
 	var fb, hb strings.Builder
+
+	fb.WriteString("Mode: " + modeDescribe + "\n\n")
+	hb.WriteString("Mode: " + modeDescribe + "\n")
 
 	fb.WriteString("Describe the upcoming scene in plain prose. Do not decide outcomes; only set the scene.\n\n")
 	fb.WriteString("Sections:\n")
@@ -47,6 +58,9 @@ func buildPresentPrompt(pc PresentContext) (fullPrompt string, historyData strin
 
 func buildNarratePrompt(nc NarrateContext) (fullPrompt string, historyData string) {
 	var fb, hb strings.Builder
+
+	fb.WriteString("Mode: " + modeNarrate + "\n\n")
+	hb.WriteString("Mode: " + modeNarrate + "\n")
 
 	fb.WriteString("Narrate what happened this turn, in the exact order given. Do not change or contradict any outcome.\n\n")
 	fb.WriteString("Sections:\n")

@@ -70,6 +70,12 @@ type clauseNarratedData struct {
 	NarrationPlain string `json:"narrationPlain"`
 }
 
+type clausePresentedData struct {
+	ChapterIndex  int  `json:"chapterIndex"`
+	ClauseOrder   int  `json:"clauseOrder"`
+	RequiresInput bool `json:"requiresInput"`
+}
+
 type createRunResponse struct {
 	RunID string `json:"runId"`
 	WSURL string `json:"wsUrl"`
@@ -125,20 +131,27 @@ func httpPost(url string, body any, out any) error {
 
 func getStoryLog(runID string) []storyLogEntry {
 	var view playerView
-	_ = httpGet(fmt.Sprintf("http://localhost:18080/runs/%s/state", runID), &view)
+	if err := httpGet(fmt.Sprintf("http://localhost:18080/runs/%s/state", runID), &view); err != nil {
+		log.Printf("getStoryLog(%s): %v", runID, err)
+		return nil
+	}
 	return view.StoryLog
 }
 
 func postAction(runID string, chapterIdx, clauseOrder int, charID, rawText string) {
 	url := fmt.Sprintf("http://localhost:18080/runs/%s/chapters/%d/clauses/%d/action", runID, chapterIdx, clauseOrder)
 	var resp actionResponse
-	_ = httpPost(url, map[string]string{"characterId": charID, "rawText": rawText}, &resp)
+	if err := httpPost(url, map[string]string{"characterId": charID, "rawText": rawText}, &resp); err != nil {
+		log.Printf("postAction(%s, %d:%d): %v", runID, chapterIdx, clauseOrder, err)
+	}
 }
 
 func claimLoot(runID, itemID, charID string) {
 	url := fmt.Sprintf("http://localhost:18080/runs/%s/loot/%s/claim", runID, itemID)
 	var resp lootClaimResponse
-	_ = httpPost(url, map[string]string{"characterId": charID}, &resp)
+	if err := httpPost(url, map[string]string{"characterId": charID}, &resp); err != nil {
+		log.Printf("claimLoot(%s, %s): %v", runID, itemID, err)
+	}
 }
 
 type logWriter struct {
@@ -188,43 +201,76 @@ func (lw *logWriter) close() {
 }
 
 func main() {
-	n := narrator.NewLocal("http://192.168.0.197:8090", "local", "You are a vivid fantasy narrator. In PRESENT mode, describe the upcoming scene based on the beat premise and known facts. In NARRATE mode, narrate resolved actions faithfully in the exact order given. Write in plain prose; never decide outcomes or contradict provided data. Maximum response length is 50 words.", "PCC9zXtmeqYaGJacEOvihiMNugyc1EuAaN7c7G43HW6rjKXP0bF4cMM66qOITQQ9")
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+
+	log.Println("Creating narrator...")
+	n := narrator.NewLocal("http://192.168.0.197:8090", "local", "You are a vivid fantasy narrator. Each message starts with a \"Mode:\" line telling you what to do this turn: \"Mode: describe\" means describe the upcoming scene based on the beat premise and known facts; \"Mode: narrate\" means narrate the resolved actions faithfully in the exact order given. Write in plain prose; never decide outcomes or contradict provided data. Maximum response length is 50 words.", "PCC9zXtmeqYaGJacEOvihiMNugyc1EuAaN7c7G43HW6rjKXP0bF4cMM66qOITQQ9")
 	if logFile := os.Getenv("LLM_LOG_FILE"); logFile != "" {
 		n.LogFile = logFile
 	}
+
+	log.Println("Creating server...")
 	srv := api.NewServer(n)
 	srv.WindowDuration = 5 * time.Second
 	srv.LootWindowDuration = 3 * time.Second
+
+	log.Println("Registering scenario demo15...")
 	srv.RegisterScenario("demo15", &api.ScenarioConfig{
 		Gameplay: demoGameplay(),
 		CheckFn:  demoCheck,
 		EffectFn: demoEffect,
 	})
 
+	log.Println("Starting HTTP server on :18080...")
 	httpSrv := &http.Server{Addr: ":18080", Handler: srv.Handler()}
-	go httpSrv.ListenAndServe()
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	}()
 	time.Sleep(200 * time.Millisecond)
+	log.Println("Server startup sleep done")
 
+	log.Println("Creating run...")
 	var createResp createRunResponse
 	if err := httpPost("http://localhost:18080/runs",
 		map[string]string{"mode": "single", "scenario": "demo15"}, &createResp); err != nil {
 		log.Fatalf("create run: %v", err)
 	}
 	runID := createResp.RunID
+	log.Printf("Run created: %s", runID)
 
+	log.Println("Joining run...")
 	var joinResp joinResponse
 	if err := httpPost(fmt.Sprintf("http://localhost:18080/runs/%s/join", runID),
 		map[string]string{"characterClass": "warrior", "name": "Aria"}, &joinResp); err != nil {
 		log.Fatalf("join: %v", err)
 	}
 	charID := joinResp.CharacterID
+	log.Printf("Joined as character: %s", charID)
 
+	log.Println("Connecting WebSocket...")
 	wsURL := fmt.Sprintf("ws://localhost:18080/runs/%s/ws?characterId=%s", runID, charID)
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		log.Fatalf("ws dial: %v", err)
 	}
 	defer conn.Close()
+	log.Println("WebSocket connected")
+
+	log.Println("Starting run...")
+	var startResp struct {
+		Started bool   `json:"started"`
+		Reason  string `json:"reason,omitempty"`
+	}
+	if err := httpPost(fmt.Sprintf("http://localhost:18080/runs/%s/start", runID),
+		map[string]string{"characterId": charID}, &startResp); err != nil {
+		log.Fatalf("start run: %v", err)
+	}
+	if !startResp.Started {
+		log.Fatalf("start run failed: %s", startResp.Reason)
+	}
+	log.Println("Run started")
 
 	lw := newLogWriter()
 	var results []turnResult
@@ -232,6 +278,7 @@ func main() {
 	type clausePos struct {
 		ChapterIndex int
 		ClauseOrder  int
+		DescribeOnly bool // setup clause: scene only, no action, no narration
 	}
 	clauseCh := make(chan clausePos, 15)
 
@@ -239,21 +286,47 @@ func main() {
 		for {
 			var msg wsMessage
 			if err := conn.ReadJSON(&msg); err != nil {
+				log.Printf("ws read: %v", err)
 				return
 			}
 
 			switch msg.Event {
+			case "clause_presented":
+				var data clausePresentedData
+				if err := json.Unmarshal(msg.Data, &data); err != nil {
+					log.Printf("unmarshal clause_presented: %v", err)
+				} else if !data.RequiresInput {
+					// Describe-only (setup) clause: no window opens, no action
+					// is submitted, and NARRATE is skipped, so no
+					// clause_narrated will ever arrive for it. Record it here
+					// as a scene-only turn from PRESENT (describe mode).
+					clauseCh <- clausePos{
+						ChapterIndex: data.ChapterIndex,
+						ClauseOrder:  data.ClauseOrder,
+						DescribeOnly: true,
+					}
+				}
+
 			case "window_opened":
 				var data windowOpenedData
-				if err := json.Unmarshal(msg.Data, &data); err == nil {
+				if err := json.Unmarshal(msg.Data, &data); err != nil {
+					log.Printf("unmarshal window_opened: %v", err)
+				} else {
 					key := fmt.Sprintf("%d:%d", data.ChapterIndex, data.ClauseOrder)
 					postAction(runID, data.ChapterIndex, data.ClauseOrder, charID, demoActionTexts[key])
 				}
 
 			case "loot_window":
 				var data lootWindowData
-				if err := json.Unmarshal(msg.Data, &data); err == nil {
+				if err := json.Unmarshal(msg.Data, &data); err != nil {
+					log.Printf("unmarshal loot_window: %v", err)
+				} else {
 					mu.Lock()
+					if len(results) == 0 {
+						log.Printf("loot_window: results is empty, skipping claim")
+						mu.Unlock()
+						break
+					}
 					current := results[len(results)-1]
 					mu.Unlock()
 					if shouldClaimLoot(current.ChapterIndex, current.ClauseOrder) {
@@ -265,7 +338,9 @@ func main() {
 
 			case "clause_narrated":
 				var data clauseNarratedData
-				if err := json.Unmarshal(msg.Data, &data); err == nil {
+				if err := json.Unmarshal(msg.Data, &data); err != nil {
+					log.Printf("unmarshal clause_narrated: %v", err)
+				} else {
 					mu.Lock()
 					results = append(results, turnResult{
 						ChapterIndex: data.ChapterIndex,
@@ -278,6 +353,9 @@ func main() {
 			case "run_ended":
 				close(clauseCh)
 				return
+
+			default:
+				log.Printf("unknown ws event: %s", msg.Event)
 			}
 		}
 	}()
@@ -295,8 +373,14 @@ func main() {
 		}
 
 		key := fmt.Sprintf("%d:%d", cp.ChapterIndex, cp.ClauseOrder)
+		action := demoActionTexts[key]
+		if cp.DescribeOnly {
+			// Setup clause: PRESENT set the scene and that was the whole beat.
+			// No action was submitted and NARRATE was skipped, so both stay empty.
+			action = ""
+		}
 		fmt.Println("scene---\n", scene)
-		fmt.Println("action---\n", demoActionTexts[key])
+		fmt.Println("action---\n", action)
 		fmt.Println("narration---\n", narration)
 
 		tr := turnResult{
@@ -304,11 +388,22 @@ func main() {
 			ClauseOrder:  cp.ClauseOrder,
 			Scene:        scene,
 			Narration:    narration,
-			Action:       demoActionTexts[key],
+			Action:       action,
+		}
+		if cp.DescribeOnly {
+			// Not tracked in results (the loot handler reads results' last
+			// entry as the current acting clause); just record it in the log.
+			lw.append(tr)
+			continue
 		}
 		mu.Lock()
-		results[len(results)-1] = tr
-		mu.Unlock()
+		if len(results) == 0 {
+			log.Printf("clause loop: results is empty, cannot update index")
+			mu.Unlock()
+		} else {
+			results[len(results)-1] = tr
+			mu.Unlock()
+		}
 		lw.append(tr)
 	}
 

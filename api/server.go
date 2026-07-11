@@ -257,18 +257,22 @@ func (s *Server) driveRun(mr *managedRun) {
 			return
 		}
 
-		mr.appendStoryLog(StoryLogEntry{ChapterIndex: result.Clause.ChapterIndex, ClauseOrder: result.Clause.Order, Kind: "narration", TextPlain: result.NarrationPlain})
-		latestSnap := mr.room.Snapshot()
-		stateSummary := ""
-		if n := len(latestSnap.ChapterSummaries); n > 0 {
-			stateSummary = latestSnap.ChapterSummaries[n-1]
+		// Describe-only clause types (setup) skip NARRATE entirely, so there
+		// is no narration to log or push — PRESENT's scene was the whole beat.
+		if engine.BehaviorFor(result.Clause.Type).Narrates {
+			mr.appendStoryLog(StoryLogEntry{ChapterIndex: result.Clause.ChapterIndex, ClauseOrder: result.Clause.Order, Kind: "narration", TextPlain: result.NarrationPlain})
+			latestSnap := mr.room.Snapshot()
+			stateSummary := ""
+			if n := len(latestSnap.ChapterSummaries); n > 0 {
+				stateSummary = latestSnap.ChapterSummaries[n-1]
+			}
+			mr.hub.broadcast("clause_narrated", ClauseNarratedEvent{
+				ChapterIndex:   result.Clause.ChapterIndex,
+				ClauseOrder:    result.Clause.Order,
+				NarrationPlain: result.NarrationPlain,
+				StateSummary:   stateSummary,
+			})
 		}
-		mr.hub.broadcast("clause_narrated", ClauseNarratedEvent{
-			ChapterIndex:   result.Clause.ChapterIndex,
-			ClauseOrder:    result.Clause.Order,
-			NarrationPlain: result.NarrationPlain,
-			StateSummary:   stateSummary,
-		})
 		mr.hub.broadcast("state_updated", StateUpdatedEvent{View: mr.playerView("")})
 	}
 }

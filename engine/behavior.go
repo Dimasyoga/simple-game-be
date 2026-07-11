@@ -7,6 +7,12 @@ package engine
 type ClauseBehavior struct {
 	RequiresInput bool
 	RequiresRoll  bool
+	// Narrates reports whether the clause runs the NARRATE step at all. A
+	// setup clause is pure atmosphere (design.md): PRESENT sets the scene and
+	// that is the whole beat — there is no resolved action worth narrating, so
+	// NARRATE (narrate mode) is skipped entirely, even if authored
+	// ScriptedDeltas silently mutate state at COMMIT.
+	Narrates bool
 }
 
 // BehaviorFor returns the v1 default behavior for a clause type. An unknown
@@ -19,12 +25,13 @@ func BehaviorFor(t ClauseType) ClauseBehavior {
 	case ClauseSetup:
 		// Pure atmosphere: no action to take, per design.md's own example of
 		// a setup clause handing the party a starting item unconditionally.
-		return ClauseBehavior{RequiresInput: false, RequiresRoll: false}
+		// Describe-only — the scene IS the beat, so NARRATE is skipped.
+		return ClauseBehavior{RequiresInput: false, RequiresRoll: false, Narrates: false}
 	case ClauseConflict:
-		return ClauseBehavior{RequiresInput: true, RequiresRoll: true}
+		return ClauseBehavior{RequiresInput: true, RequiresRoll: true, Narrates: true}
 	case ClauseResolution:
-		return ClauseBehavior{RequiresInput: true, RequiresRoll: false}
+		return ClauseBehavior{RequiresInput: true, RequiresRoll: false, Narrates: true}
 	default:
-		return ClauseBehavior{RequiresInput: true, RequiresRoll: false}
+		return ClauseBehavior{RequiresInput: true, RequiresRoll: false, Narrates: true}
 	}
 }

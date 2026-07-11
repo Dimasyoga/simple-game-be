@@ -221,15 +221,21 @@ func FinishClause(
 	}
 	syncCharacters(run, characters)
 
-	// NARRATE (R8)
+	// NARRATE (R8) — skipped for describe-only clause types (setup): the
+	// scene from PRESENT is the whole beat, so there is nothing to narrate
+	// and narrationPlain stays empty.
 	clause.Phase = PhaseNarrate
-	narrationPlain, err := n.Narrate(ctx, narrator.NarrateContext{
-		ProseSummary:    buildMemoryContext(run),
-		RelevantState:   worldStateAsMap(run.WorldState),
-		ResolvedActions: summarizeResolved(clause.ResolvedActions, characters),
-	})
-	if err != nil {
-		return ClauseResult{}, fmt.Errorf("engine: NARRATE: %w", err)
+	var narrationPlain string
+	if BehaviorFor(clause.Type).Narrates {
+		narration, err := n.Narrate(ctx, narrator.NarrateContext{
+			ProseSummary:    buildMemoryContext(run),
+			RelevantState:   worldStateAsMap(run.WorldState),
+			ResolvedActions: summarizeResolved(clause.ResolvedActions, characters),
+		})
+		if err != nil {
+			return ClauseResult{}, fmt.Errorf("engine: NARRATE: %w", err)
+		}
+		narrationPlain = narration
 	}
 
 	// COMMIT (R9, R9b)

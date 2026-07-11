@@ -193,6 +193,35 @@ func TestLocalMultiTurnHistory(t *testing.T) {
 	}
 }
 
+func TestLocalHistoryDistinguishesModes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{
+			Choices: []struct {
+				Message chatMessage `json:"message"`
+			}{{Message: chatMessage{Content: "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	l := NewLocal(server.URL, "test", "", "")
+	_, _ = l.Present(context.Background(), PresentContext{BeatPremise: "a goblin blocks the path"})
+	_, _ = l.Narrate(context.Background(), NarrateContext{
+		ResolvedActions: []ResolvedActionSummary{
+			{CharacterID: "hero", CharacterName: "Aria", Intent: "attack", Outcome: "SUCCESS"},
+		},
+	})
+
+	if len(l.messages) != 4 {
+		t.Fatalf("expected 4 stored messages (2 turns x user+assistant), got %d", len(l.messages))
+	}
+	if !strings.Contains(l.messages[0].Content, "Mode: describe") {
+		t.Fatalf("expected first turn history to be tagged Mode: describe, got: %s", l.messages[0].Content)
+	}
+	if !strings.Contains(l.messages[2].Content, "Mode: narrate") {
+		t.Fatalf("expected second turn history to be tagged Mode: narrate, got: %s", l.messages[2].Content)
+	}
+}
+
 func TestLocalEvictsOldMessages(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{

@@ -2,3 +2,5 @@
 /simple-game-be.exe
 *.test
 **/logs
+.opencode
+demo15turn
