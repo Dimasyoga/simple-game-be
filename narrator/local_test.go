@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -289,5 +290,81 @@ func TestLocalNoAuthorizationHeaderWhenAPIKeyEmpty(t *testing.T) {
 	l := NewLocal(server.URL, "mistral-7b", "", "")
 	if _, err := l.Present(context.Background(), PresentContext{BeatPremise: "test"}); err != nil {
 		t.Fatalf("expected no Authorization header, got %q", gotAuth)
+	}
+}
+
+func TestLocalMaxTokensSentOnlyWhenSet(t *testing.T) {
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{
+			Choices: []struct {
+				Message chatMessage `json:"message"`
+			}{{Message: chatMessage{Content: "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	// Unset: max_tokens must be omitted entirely (omitempty), so local servers
+	// that reject or ignore it are unaffected.
+	l := NewLocal(server.URL, "gpt-4o-mini", "", "")
+	if _, err := l.Present(context.Background(), PresentContext{BeatPremise: "test"}); err != nil {
+		t.Fatalf("Present failed: %v", err)
+	}
+	if strings.Contains(gotBody, "max_tokens") {
+		t.Fatalf("expected max_tokens omitted when unset, got body: %s", gotBody)
+	}
+
+	// Set: max_tokens appears in the request.
+	l.MaxTokens = 120
+	if _, err := l.Present(context.Background(), PresentContext{BeatPremise: "test"}); err != nil {
+		t.Fatalf("Present failed: %v", err)
+	}
+	if !strings.Contains(gotBody, `"max_tokens":120`) {
+		t.Fatalf("expected max_tokens:120 in request, got body: %s", gotBody)
+	}
+}
+
+func TestLocalExtraHeadersSent(t *testing.T) {
+	var gotReferer, gotTitle string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotReferer = r.Header.Get("HTTP-Referer")
+		gotTitle = r.Header.Get("X-Title")
+		_ = json.NewEncoder(w).Encode(chatCompletionsResponse{
+			Choices: []struct {
+				Message chatMessage `json:"message"`
+			}{{Message: chatMessage{Content: "ok"}}},
+		})
+	}))
+	defer server.Close()
+
+	l := NewLocal(server.URL, "openai/gpt-4o-mini", "", "")
+	l.ExtraHeaders = map[string]string{"HTTP-Referer": "https://example.com", "X-Title": "simple-game"}
+	if _, err := l.Present(context.Background(), PresentContext{BeatPremise: "test"}); err != nil {
+		t.Fatalf("Present failed: %v", err)
+	}
+	if gotReferer != "https://example.com" {
+		t.Fatalf("expected HTTP-Referer forwarded, got %q", gotReferer)
+	}
+	if gotTitle != "simple-game" {
+		t.Fatalf("expected X-Title forwarded, got %q", gotTitle)
+	}
+}
+
+func TestLocalSurfacesErrorBodyOnNon200(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"the model gpt-nope does not exist"}}`))
+	}))
+	defer server.Close()
+
+	l := NewLocal(server.URL, "gpt-nope", "", "")
+	_, err := l.Present(context.Background(), PresentContext{BeatPremise: "test"})
+	if err == nil {
+		t.Fatal("expected an error on non-200 response")
+	}
+	if !strings.Contains(err.Error(), "the model gpt-nope does not exist") {
+		t.Fatalf("expected provider error body in error, got: %v", err)
 	}
 }

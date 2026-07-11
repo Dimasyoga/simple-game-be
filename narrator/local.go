@@ -16,11 +16,19 @@ import (
 const maxTurns = 10
 
 // Local is a Narrator backed by any server exposing the OpenAI-compatible
-// chat completions API (POST {BaseURL}/v1/chat/completions) — the common
-// surface across Ollama, llama.cpp's llama-server, vLLM, LM Studio, and
-// text-generation-webui. Which local model actually answers is a BaseURL +
-// Model config change, not a code change, as long as the server speaks this
-// shape (tasks.md Phase 5).
+// chat completions API (POST {BaseURL}/v1/chat/completions) with Bearer auth —
+// the common surface across local runtimes (Ollama, llama.cpp's llama-server,
+// vLLM, LM Studio, text-generation-webui) AND hosted providers that speak the
+// same shape, namely OpenAI (ChatGPT API) and OpenRouter. Which model answers
+// is a BaseURL + Model + APIKey config change, not a code change (tasks.md
+// Phase 5). Example targets:
+//
+//	local llama: BaseURL "http://localhost:8080",     Model "local"
+//	OpenAI:      BaseURL "https://api.openai.com",    Model "gpt-4o-mini"
+//	OpenRouter:  BaseURL "https://openrouter.ai/api", Model "openai/gpt-4o"
+//
+// BaseURL must be the host WITHOUT the "/v1/chat/completions" suffix — that
+// path is appended for you.
 type Local struct {
 	BaseURL      string // e.g. "http://localhost:11434" or "http://localhost:8080"
 	Model        string // model name exactly as the server expects it
@@ -28,6 +36,10 @@ type Local struct {
 	APIKey       string // optional; sent as Bearer token in Authorization header
 	HTTPClient   *http.Client
 	LogFile      string // optional; if set, logs request/response JSON payloads to this file
+	MaxTokens    int    // optional; caps completion length when > 0 (omitted otherwise)
+	// ExtraHeaders are added to every request, e.g. OpenRouter's optional
+	// "HTTP-Referer" / "X-Title" attribution headers. Nil is fine.
+	ExtraHeaders map[string]string
 
 	messages []chatMessage
 }
@@ -55,9 +67,10 @@ type chatMessage struct {
 }
 
 type chatCompletionsRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Model     string        `json:"model"`
+	Messages  []chatMessage `json:"messages"`
+	Stream    bool          `json:"stream"`
+	MaxTokens int           `json:"max_tokens,omitempty"`
 }
 
 type chatCompletionsResponse struct {
@@ -84,7 +97,7 @@ func (l *Local) complete(ctx context.Context, fullPrompt string, historyData str
 	messages = append(messages, l.messages...)
 	messages = append(messages, chatMessage{Role: "user", Content: fullPrompt})
 
-	body, err := json.Marshal(chatCompletionsRequest{Model: l.Model, Messages: messages})
+	body, err := json.Marshal(chatCompletionsRequest{Model: l.Model, Messages: messages, MaxTokens: l.MaxTokens})
 	if err != nil {
 		return "", fmt.Errorf("narrator: marshal request: %w", err)
 	}
@@ -100,6 +113,9 @@ func (l *Local) complete(ctx context.Context, fullPrompt string, historyData str
 	if l.APIKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+l.APIKey)
 	}
+	for k, v := range l.ExtraHeaders {
+		httpReq.Header.Set(k, v)
+	}
 
 	client := l.HTTPClient
 	if client == nil {
@@ -112,16 +128,18 @@ func (l *Local) complete(ctx context.Context, fullPrompt string, historyData str
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("narrator: unexpected status %d from %s", resp.StatusCode, l.BaseURL)
-	}
-
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("narrator: read response: %w", err)
 	}
 	if l.LogFile != "" {
 		logPayload(l.LogFile, "RESPONSE", string(respBody))
+	}
+
+	// Surface the provider's error body (invalid model / auth / rate limit),
+	// not just the bare status code — hosted APIs return actionable JSON here.
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("narrator: status %d from %s: %s", resp.StatusCode, l.BaseURL, string(respBody))
 	}
 
 	var parsed chatCompletionsResponse

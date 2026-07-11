@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,14 @@ var demoActionTexts = map[string]string{
 
 func shouldClaimLoot(chapterIdx, clauseOrder int) bool {
 	return !(chapterIdx == 2 && clauseOrder == 1)
+}
+
+// envOr returns the value of environment variable key, or def when unset/empty.
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 type turnResult struct {
@@ -204,10 +213,33 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 
 	log.Println("Creating narrator...")
-	n := narrator.NewLocal("http://192.168.0.197:8090", "local", "You are a vivid fantasy narrator. Each message starts with a \"Mode:\" line telling you what to do this turn: \"Mode: describe\" means describe the upcoming scene based on the beat premise and known facts; \"Mode: narrate\" means narrate the resolved actions faithfully in the exact order given. Write in plain prose; never decide outcomes or contradict provided data. Maximum response length is 50 words.", "PCC9zXtmeqYaGJacEOvihiMNugyc1EuAaN7c7G43HW6rjKXP0bF4cMM66qOITQQ9")
+	// Same LOCAL_NARRATOR_* env vars as the main server (see main.go), so the
+	// demo can be pointed at OpenAI/OpenRouter instead of the local box. When
+	// unset, the hardcoded defaults keep the demo runnable out of the box.
+	baseURL := envOr("LOCAL_NARRATOR_URL", "http://192.168.0.197:8090")
+	model := envOr("LOCAL_NARRATOR_MODEL", "local")
+	systemPrompt := envOr("LOCAL_NARRATOR_SYSTEM_PROMPT", "You are a vivid fantasy narrator. Each message starts with a \"Mode:\" line telling you what to do this turn: \"Mode: describe\" means describe the upcoming scene based on the beat premise and known facts; \"Mode: narrate\" means narrate the resolved actions faithfully in the exact order given. Write in plain prose; never decide outcomes or contradict provided data. Maximum response length is 50 words.")
+	apiKey := os.Getenv("LOCAL_NARRATOR_API_KEY")
+	n := narrator.NewLocal(baseURL, model, systemPrompt, apiKey)
 	if logFile := os.Getenv("LLM_LOG_FILE"); logFile != "" {
 		n.LogFile = logFile
 	}
+	if v := os.Getenv("LOCAL_NARRATOR_MAX_TOKENS"); v != "" {
+		if maxTokens, err := strconv.Atoi(v); err == nil {
+			n.MaxTokens = maxTokens
+		}
+	}
+	// Optional OpenRouter attribution headers (harmless for OpenAI/local).
+	if referer := os.Getenv("LOCAL_NARRATOR_HTTP_REFERER"); referer != "" {
+		n.ExtraHeaders = map[string]string{"HTTP-Referer": referer}
+	}
+	if title := os.Getenv("LOCAL_NARRATOR_TITLE"); title != "" {
+		if n.ExtraHeaders == nil {
+			n.ExtraHeaders = map[string]string{}
+		}
+		n.ExtraHeaders["X-Title"] = title
+	}
+	log.Printf("Narrator: %s (model=%s)", baseURL, model)
 
 	log.Println("Creating server...")
 	srv := api.NewServer(n)
