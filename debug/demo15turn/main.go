@@ -13,31 +13,36 @@ import (
 	"time"
 
 	"simple-game-be/api"
+	"simple-game-be/engine"
 	"simple-game-be/narrator"
 
 	"github.com/gorilla/websocket"
 )
 
+// demoActionTexts holds the auto-submitted intent for each clause that takes
+// input. Only conflict/resolution clauses open a window and get narrated;
+// setup clauses are describe-only and have no entry here. Each item-use line
+// references loot dropped on the previous clause, so the run exercises pick-up
+// then use.
 var demoActionTexts = map[string]string{
-	"0:0": "I step into the forest, eyes scanning the tree line",
-	"0:1": "I follow the narrow path through the undergrowth",
-	"0:2": "I investigate the strange tracks on the ground",
-	"0:3": "I examine the ruins of the old shrine",
-	"0:4": "I draw my sword and attack the shadow wolves",
-	"1:0": "I search the archway for a hidden lever",
-	"1:1": "I examine the locked gate for a keyhole",
-	"1:2": "I ask the hermit about the forest's curse",
-	"1:3": "I climb out of the sinkhole",
-	"1:4": "I drink from the hidden spring",
-	"2:0": "I cross the bridge of roots",
-	"2:1": "I break through the witch's illusions",
-	"2:2": "I approach the heart of the forest",
-	"2:3": "I speak the words to lift the curse",
-	"2:4": "I watch the dawn break over the clearing",
+	"0:2": "I close in and cut down the bandit sentry with my katana",
+	"0:3": "I hurl the tanto to drop the archer, then run the spearman through",
+	"0:4": "I flick open the war-fan to bat the arrows aside",
+	"1:1": "I disarm the looter and pin him against the shelves",
+	"1:2": "I smear the healing salve over my wounds, then force the storehouse door",
+	"2:1": "I press the iron seal into the gate lock and haul it open",
+	"2:2": "I trade blows with Ryuzo and drive my katana home",
+	"2:3": "I take up the ancestral blade and cut Hana's bindings",
+	"2:4": "I sheathe the blade and walk the mountain road alone",
 }
 
-func shouldClaimLoot(chapterIdx, clauseOrder int) bool {
-	return !(chapterIdx == 2 && clauseOrder == 1)
+// shouldClaimLoot decides whether the hero grabs a dropped item, keyed by item
+// name (the loot_window event carries names, and it fires before the clause is
+// narrated so clause coordinates aren't available yet). Kaede deliberately
+// leaves the war-fan behind so the next turn's "flick open the war-fan" action
+// is gated illegal and the narrator has to render the miss.
+func shouldClaimLoot(itemName string) bool {
+	return itemName != "war-fan"
 }
 
 // envOr returns the value of environment variable key, or def when unset/empty.
@@ -218,7 +223,7 @@ func main() {
 	// unset, the hardcoded defaults keep the demo runnable out of the box.
 	baseURL := envOr("LOCAL_NARRATOR_URL", "http://192.168.0.197:8090")
 	model := envOr("LOCAL_NARRATOR_MODEL", "local")
-	systemPrompt := envOr("LOCAL_NARRATOR_SYSTEM_PROMPT", "You are a vivid fantasy narrator. Each message starts with a \"Mode:\" line telling you what to do this turn: \"Mode: describe\" means describe the upcoming scene based on the beat premise and known facts; \"Mode: narrate\" means narrate the resolved actions faithfully in the exact order given. Write in plain prose; never decide outcomes or contradict provided data. Maximum response length is 50 words.")
+	systemPrompt := envOr("LOCAL_NARRATOR_SYSTEM_PROMPT", "You are the narrator of a feudal-Japan samurai epic, in the grave, atmospheric spirit of Kurosawa. Each message starts with a \"Mode:\" line telling you what to do this turn: \"Mode: describe\" means describe the upcoming scene based on the beat premise and known facts; \"Mode: narrate\" means narrate the resolved actions faithfully in the exact order given. Write vivid, grounded prose; honor the State facts (fallen foes stay fallen); never decide outcomes or contradict provided data. Maximum response length is 150 words.")
 	apiKey := os.Getenv("LOCAL_NARRATOR_API_KEY")
 	n := narrator.NewLocal(baseURL, model, systemPrompt, apiKey)
 	if logFile := os.Getenv("LLM_LOG_FILE"); logFile != "" {
@@ -245,12 +250,16 @@ func main() {
 	srv := api.NewServer(n)
 	srv.WindowDuration = 5 * time.Second
 	srv.LootWindowDuration = 3 * time.Second
+	// Fixed seed so the demo log is reproducible run to run; tune if a drop is
+	// missed (the war-fan miss is GATE-forced and seed-independent).
+	srv.NewRNG = func() engine.RNG { return engine.NewSeededRNG(1) }
 
 	log.Println("Registering scenario demo15...")
 	srv.RegisterScenario("demo15", &api.ScenarioConfig{
 		Gameplay: demoGameplay(),
 		CheckFn:  demoCheck,
 		EffectFn: demoEffect,
+		Catalog:  demoCatalog(),
 	})
 
 	log.Println("Starting HTTP server on :18080...")
@@ -275,7 +284,7 @@ func main() {
 	log.Println("Joining run...")
 	var joinResp joinResponse
 	if err := httpPost(fmt.Sprintf("http://localhost:18080/runs/%s/join", runID),
-		map[string]string{"characterClass": "warrior", "name": "Aria"}, &joinResp); err != nil {
+		map[string]string{"characterClass": "warrior", "name": "Kaede"}, &joinResp); err != nil {
 		log.Fatalf("join: %v", err)
 	}
 	charID := joinResp.CharacterID
@@ -353,16 +362,8 @@ func main() {
 				if err := json.Unmarshal(msg.Data, &data); err != nil {
 					log.Printf("unmarshal loot_window: %v", err)
 				} else {
-					mu.Lock()
-					if len(results) == 0 {
-						log.Printf("loot_window: results is empty, skipping claim")
-						mu.Unlock()
-						break
-					}
-					current := results[len(results)-1]
-					mu.Unlock()
-					if shouldClaimLoot(current.ChapterIndex, current.ClauseOrder) {
-						for _, item := range data.Items {
+					for _, item := range data.Items {
+						if shouldClaimLoot(item.Name) {
 							claimLoot(runID, item.ItemID, charID)
 						}
 					}

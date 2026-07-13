@@ -27,6 +27,11 @@ type ScenarioConfig struct {
 	Gameplay engine.Gameplay
 	CheckFn  engine.CheckResolver
 	EffectFn engine.EffectResolver
+	// Catalog is the set of item names GATE recognizes in free-text actions so
+	// it can hard-check references against the actor's inventory. Nil => empty
+	// catalog (no item grounding), which is the default for scenarios that
+	// don't drop or gate items.
+	Catalog engine.ItemCatalog
 }
 
 type Server struct {
@@ -307,7 +312,11 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	run := engine.NewRun(runID, req.GameplayID, req.Mode, cfg.Gameplay, nil)
 	rm := room.NewRoom(run, room.RealClock(), s.WindowDuration, s.LootWindowDuration)
 
-	mr := &managedRun{id: runID, room: rm, hub: newHub(), catalog: engine.NewItemCatalog(), rng: rng, scenario: cfg}
+	catalog := cfg.Catalog
+	if catalog == nil {
+		catalog = engine.NewItemCatalog()
+	}
+	mr := &managedRun{id: runID, room: rm, hub: newHub(), catalog: catalog, rng: rng, scenario: cfg}
 	rm.Hooks = mr.hooks()
 
 	s.mu.Lock()
