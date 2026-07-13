@@ -6,9 +6,13 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -76,7 +80,58 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /runs/{runId}/chapters/{chapterIndex}/clauses/{clauseOrder}/pass", s.handlePass)
 	mux.HandleFunc("POST /runs/{runId}/loot/{itemId}/claim", s.handleLootClaim)
 	mux.HandleFunc("GET /runs/{runId}/ws", s.handleWS)
-	return mux
+	return withLogging(withCORS(mux))
+}
+
+// withLogging wraps h to log every incoming request to the terminal with its
+// method, path, response status, and duration. Outermost so preflight OPTIONS
+// and requests to unknown routes are logged too.
+func withLogging(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		h.ServeHTTP(rec, r)
+		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.status, time.Since(start))
+	})
+}
+
+// statusRecorder captures the response status code so withLogging can report
+// it; it defaults to 200 since a handler that writes a body without calling
+// WriteHeader implicitly sends 200.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack forwards to the underlying ResponseWriter so the WebSocket upgrade
+// (which requires http.Hijacker) still works through the logging wrapper.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("underlying ResponseWriter does not support hijacking")
+	}
+	return hj.Hijack()
+}
+
+// withCORS wraps h so every response carries permissive CORS headers and
+// preflight OPTIONS requests are answered directly. Origin "*" is fine for
+// development; tighten to a specific frontend origin before production.
+func withCORS(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 type managedRun struct {

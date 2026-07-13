@@ -1,4 +1,7 @@
-package main
+// Package scenario holds registerable game content (Gameplay templates plus
+// their check/effect resolvers and item catalogs) that the API server can
+// expose as selectable scenarios via Server.RegisterScenario.
+package scenario
 
 import (
 	"fmt"
@@ -7,11 +10,12 @@ import (
 	"simple-game-be/engine"
 )
 
-// Droppable loot for the demo, defined once so demoEffect (which places the
-// drop) and demoCatalog (which lets GATE recognize the item in free-text
-// actions) share the exact same ID and Name. IDs are stable — no per-character
-// suffix — because the demo is single-player and GATE checks inventory by the
-// catalog item's ID, which must match the ID that landed in the inventory.
+// Droppable loot for the demo15 scenario, defined once so Demo15Effect (which
+// places the drop) and Demo15Catalog (which lets GATE recognize the item in
+// free-text actions) share the exact same ID and Name. IDs are stable — no
+// per-character suffix — because the demo is single-player and GATE checks
+// inventory by the catalog item's ID, which must match the ID that landed in
+// the inventory.
 var (
 	itemTanto          = engine.Item{ID: "tanto", Name: "tanto", Type: "weapon"}
 	itemWarFan         = engine.Item{ID: "war-fan", Name: "war-fan", Type: "weapon"}
@@ -20,15 +24,15 @@ var (
 	itemAncestralBlade = engine.Item{ID: "ancestral blade", Name: "ancestral blade", Type: "weapon"}
 )
 
-// demoCatalog is the run's GATE catalog: reference one of these by name in an
+// Demo15Catalog is the run's GATE catalog: reference one of these by name in an
 // action ("hurl the tanto") and GATE hard-checks it against the actor's
 // inventory. Kaede's katana is deliberately NOT here — "my katana" stays free
 // text so her inherent weapon is never gated.
-func demoCatalog() engine.ItemCatalog {
+func Demo15Catalog() engine.ItemCatalog {
 	return engine.NewItemCatalog(itemTanto, itemWarFan, itemSalve, itemSeal, itemAncestralBlade)
 }
 
-func demoGameplay() engine.Gameplay {
+func Demo15Gameplay() engine.Gameplay {
 	return engine.Gameplay{
 		ID:    "demo15",
 		Title: "The Ronin of Tsukikage",
@@ -71,7 +75,7 @@ func demoGameplay() engine.Gameplay {
 	}
 }
 
-func demoCheck(_ engine.ParsedAction, c engine.Character, _ engine.ClauseType, _ engine.SceneState) engine.CheckSpec {
+func Demo15Check(_ engine.ParsedAction, c engine.Character, _ engine.ClauseType, _ engine.SceneState) engine.CheckSpec {
 	// Low DC so legal conflict actions reliably succeed and the intended
 	// drop->use item chain never breaks on an unlucky roll. The one intended
 	// failure (using the skipped war-fan) is forced by GATE, not the dice.
@@ -120,7 +124,7 @@ func demoFlags(chapterIdx, clauseOrder int) (flag, kill string) {
 	}
 }
 
-func demoEffect(_ engine.ParsedAction, c engine.Character, _ engine.ClauseType, outcome engine.Outcome) []engine.StateDelta {
+func Demo15Effect(_ engine.ParsedAction, c engine.Character, _ engine.ClauseType, outcome engine.Outcome) []engine.StateDelta {
 	if outcome == engine.OutcomeFail {
 		return nil
 	}

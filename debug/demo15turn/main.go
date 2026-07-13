@@ -15,6 +15,7 @@ import (
 	"simple-game-be/api"
 	"simple-game-be/engine"
 	"simple-game-be/narrator"
+	"simple-game-be/scenario"
 
 	"github.com/gorilla/websocket"
 )
@@ -256,10 +257,10 @@ func main() {
 
 	log.Println("Registering scenario demo15...")
 	srv.RegisterScenario("demo15", &api.ScenarioConfig{
-		Gameplay: demoGameplay(),
-		CheckFn:  demoCheck,
-		EffectFn: demoEffect,
-		Catalog:  demoCatalog(),
+		Gameplay: scenario.Demo15Gameplay(),
+		CheckFn:  scenario.Demo15Check,
+		EffectFn: scenario.Demo15Effect,
+		Catalog:  scenario.Demo15Catalog(),
 	})
 
 	log.Println("Starting HTTP server on :18080...")

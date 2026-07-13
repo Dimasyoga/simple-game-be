@@ -8,6 +8,7 @@ import (
 
 	"simple-game-be/api"
 	"simple-game-be/narrator"
+	"simple-game-be/scenario"
 )
 
 func main() {
@@ -46,6 +47,12 @@ func main() {
 	}
 
 	server := api.NewServer(n)
+	server.RegisterScenario("demo15", &api.ScenarioConfig{
+		Gameplay: scenario.Demo15Gameplay(),
+		CheckFn:  scenario.Demo15Check,
+		EffectFn: scenario.Demo15Effect,
+		Catalog:  scenario.Demo15Catalog(),
+	})
 	log.Printf("simple-game-be listening on %s (narrator: %s)", addr, narratorKind)
 	log.Fatal(http.ListenAndServe(addr, server.Handler()))
 }
